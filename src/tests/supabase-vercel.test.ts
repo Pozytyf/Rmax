@@ -166,6 +166,21 @@ test('4. Full Knex migration 0004 runs cleanly and Vercel config + api/index.ts 
     assert.equal(await k.schema.hasTable('menu_item_recipes'), true);
     assert.equal(await k.schema.hasTable('stock_alert_settings'), true);
     assert.equal(await k.schema.hasTable('audit_logs'), true);
+    for (const table of [
+      'menu_combos',
+      'promotions',
+      'cash_register_sessions',
+      'table_calls',
+      'loyalty_transactions',
+      'customer_reviews',
+      'inventory_counts',
+      'inventory_count_lines',
+      'staff_shifts',
+      'staff_time_clocks',
+      'b2b_invoices',
+    ]) {
+      assert.equal(await k.schema.hasTable(table), true, `Missing operations table ${table}`);
+    }
   } finally {
     await k.destroy();
   }
