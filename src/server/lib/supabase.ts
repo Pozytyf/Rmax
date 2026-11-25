@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { Pool } from 'pg';
+import { getKnex } from '../knex.ts';
 
 export interface SupabaseRuntimeConfig {
   url: string;
@@ -11,7 +11,6 @@ export interface SupabaseRuntimeConfig {
 }
 
 let cachedAdminClient: SupabaseClient | null = null;
-let cachedPgPool: Pool | null = null;
 
 export function getSupabaseConfig(): SupabaseRuntimeConfig {
   const url = (
@@ -70,30 +69,6 @@ export function getSupabaseAdminClient(): SupabaseClient | null {
   return cachedAdminClient;
 }
 
-export function getPostgresPool(): Pool | null {
-  const cfg = getSupabaseConfig();
-  if (!cfg.dbUrl) {
-    return null;
-  }
-  if (!cachedPgPool) {
-    const isServerless = Boolean(process.env.VERCEL);
-    const useSsl =
-      process.env.DATABASE_SSL === 'true' || isSupabaseDbUrl(cfg.dbUrl);
-    cachedPgPool = new Pool({
-      connectionString: cfg.dbUrl,
-      ssl: useSsl ? { rejectUnauthorized: true } : undefined,
-      max: Number(process.env.DB_POOL_MAX || (isServerless ? 5 : 10)),
-      idleTimeoutMillis: isServerless ? 10_000 : 15_000,
-      connectionTimeoutMillis: 10_000,
-      allowExitOnIdle: isServerless,
-    });
-    cachedPgPool.on('error', (err) => {
-      console.error('[Supabase/PG Pool Error]', err);
-    });
-  }
-  return cachedPgPool;
-}
-
 export async function checkSupabaseHealth(): Promise<{
   configured: boolean;
   realtimeReady: boolean;
@@ -101,8 +76,12 @@ export async function checkSupabaseHealth(): Promise<{
   latencyMs: number | null;
 }> {
   const cfg = getSupabaseConfig();
-  const pool = getPostgresPool();
-  if (!pool) {
+  const client = (process.env.DATABASE_CLIENT || '').toLowerCase();
+  const postgresSelected = ['pg', 'postgres', 'postgresql'].includes(client);
+
+  // Report the database actually selected by the application. Do not create a
+  // second pg.Pool solely for health checks: it would duplicate connections.
+  if (!cfg.dbUrl || !postgresSelected) {
     return {
       configured: cfg.configured,
       realtimeReady: cfg.realtimeReady,
@@ -113,7 +92,7 @@ export async function checkSupabaseHealth(): Promise<{
 
   const startedAt = Date.now();
   try {
-    await pool.query('SELECT 1');
+    await getKnex().raw('SELECT 1');
     return {
       configured: cfg.configured,
       realtimeReady: cfg.realtimeReady,
@@ -132,8 +111,4 @@ export async function checkSupabaseHealth(): Promise<{
 
 export function resetSupabaseSingletonsForTest(): void {
   cachedAdminClient = null;
-  if (cachedPgPool) {
-    void cachedPgPool.end().catch(() => {});
-    cachedPgPool = null;
-  }
 }
