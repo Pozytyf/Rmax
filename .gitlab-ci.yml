@@ -34,6 +34,11 @@ existing-tests:
   script:
     - bun run test
 
+full-test-suite:
+  stage: validate
+  script:
+    - bun run test:all
+
 postgres-migrations:
   stage: validate
   services:
