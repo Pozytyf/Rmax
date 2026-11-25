@@ -14,7 +14,8 @@
     "test:auth": "NODE_OPTIONS=--experimental-vm-modules jest",
     "migrate:latest": "tsx src/server/migrate.ts latest",
     "migrate:rollback": "tsx src/server/migrate.ts rollback",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:postgres-config": "tsx --test src/tests/postgres-runtime-config.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

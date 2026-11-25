@@ -2,7 +2,7 @@
 
 Branche : `fix/chore-1-postgresql-persistence`
 
-## État d'avancement
+## État d'avancement : tranche de sécurisation initiale
 
 Cette branche démarre le durcissement de la configuration PostgreSQL. Elle ne constitue pas encore la migration complète des repositories métier.
 
@@ -10,20 +10,25 @@ Cette branche démarre le durcissement de la configuration PostgreSQL. Elle ne c
 
 - `src/server/db.ts` crée une instance `better-sqlite3` et expose une API synchrone.
 - Les repositories historiques appellent directement `getDb()` et utilisent `.prepare()`.
-- `src/server/knex.ts` expose une connexion Knex séparée.
+- `src/server/knex.ts` expose une connexion Knex distincte.
 - `api/index.ts` lançait les migrations Knex, interceptait leurs erreurs, puis initialisait SQLite.
 - `vercel.json` demande PostgreSQL, mais cela ne migre pas les repositories métier vers PostgreSQL.
 
-## Changements de cette première tranche
+## Changements réalisés dans cette tranche
 
-- La sélection explicite de PostgreSQL échoue désormais si `SUPABASE_DB_URL` et `DATABASE_URL` sont absents ; aucun fallback SQLite silencieux n'est accepté.
+- La sélection explicite de PostgreSQL échoue si `SUPABASE_DB_URL` et `DATABASE_URL` sont absents ; aucun fallback SQLite silencieux n'est accepté dans Knex.
 - Le runtime Vercel en production refuse la configuration SQLite.
+- `getDb()` refuse désormais de créer/utiliser SQLite lorsque PostgreSQL est explicitement demandé ou en production Vercel. Cela empêche le mélange silencieux des deux moteurs.
 - L'initialisation API échoue si PostgreSQL est requis mais inaccessible.
 - Les erreurs de migration Knex ne sont plus ignorées.
-- L'initialisation API ne crée plus inutilement une base SQLite au démarrage.
-- Ajout de tests ciblés pour ces règles de configuration.
+- Ajout de tests ciblés pour les règles de configuration.
+- Ajout de la commande `npm run test:postgres-config`.
 
-## Travaux encore nécessaires avant une migration complète
+## Limite importante
+
+Les repositories métier utilisent encore SQLite. En conséquence, lorsque PostgreSQL est demandé, les opérations métier qui appellent `getDb()` échoueront volontairement jusqu'à leur migration. Cette branche ne doit donc pas être déployée telle quelle en production. Ce garde-fou évite de continuer à écrire dans une base SQLite éphémère et de faire croire que les données sont persistantes.
+
+## Travaux nécessaires avant mise en production
 
 1. Migrer `authRepository`, `publicRepository`, `restaurantRepository`, `operationsRepository`, `superadminRepository` et les autres accès directs à `getDb()`.
 2. Adapter les services et controllers aux méthodes asynchrones.
@@ -35,4 +40,4 @@ Cette branche démarre le durcissement de la configuration PostgreSQL. Elle ne c
 
 ## Déploiement
 
-Ne pas déployer cette tranche seule sur la production actuelle : les repositories métier utilisent encore SQLite. Cette tranche empêche certains fallbacks dangereux et rend les erreurs de configuration/migration visibles, mais elle ne suffit pas à rendre toutes les opérations métier persistantes dans PostgreSQL.
+Ne pas déployer cette tranche seule sur la production actuelle. Elle constitue un garde-fou de développement, pas une migration terminée. La mise en production doit attendre la migration des repositories et la validation des tests PostgreSQL.

@@ -6,7 +6,22 @@ import bcrypt from 'bcryptjs';
 
 let singletonDb: SqliteDatabase | null = null;
 
+function assertSqliteRuntimeAllowed(): void {
+  const client = (process.env.DATABASE_CLIENT || '').toLowerCase();
+  const postgresRequested = ['pg', 'postgres', 'postgresql'].includes(client);
+  const productionServerless =
+    process.env.NODE_ENV === 'production' && Boolean(process.env.VERCEL);
+
+  if (postgresRequested || productionServerless) {
+    throw new Error(
+      'Accès SQLite refusé : cette instance est configurée pour PostgreSQL ou Vercel production. Les repositories métier doivent être migrés vers PostgreSQL avant activation de ce runtime.',
+    );
+  }
+}
+
 export function getDb(customPath?: string): SqliteDatabase {
+  assertSqliteRuntimeAllowed();
+
   if (singletonDb && !customPath) {
     return singletonDb;
   }
