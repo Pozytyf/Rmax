@@ -27,8 +27,6 @@ function createSqlitePoolConfig(filename: string): Knex.PoolConfig {
   const isMemory = filename === ':memory:';
 
   return {
-    // SQLite :memory: databases are isolated per connection, so max must stay 1.
-    // File-backed SQLite with WAL mode safely supports multiple concurrent readers.
     min: 1,
     max: isMemory ? 1 : 5,
     acquireTimeoutMillis: 30_000,
@@ -62,12 +60,19 @@ export function buildPostgresKnexConfig(
   connectionString: string =
     process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || '',
 ): Knex.Config {
+  if (!connectionString.trim()) {
+    throw new Error(
+      'PostgreSQL est demandé mais SUPABASE_DB_URL / DATABASE_URL est absent.',
+    );
+  }
+
   const lower = connectionString.toLowerCase();
   const isSupabaseHost =
     lower.includes('supabase.co') ||
     lower.includes('supabase.com') ||
     lower.includes('pooler.supabase');
   const useSsl = process.env.DATABASE_SSL === 'true' || isSupabaseHost;
+
   return {
     client: 'pg',
     connection: {
@@ -90,11 +95,23 @@ export function buildPostgresKnexConfig(
 export function buildKnexConfig(dbPath: string = defaultDbPath): Knex.Config {
   const pgUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || '';
   const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
-  if (
-    (client === 'pg' || client === 'postgres' || client === 'postgresql') &&
-    pgUrl
-  ) {
+  const postgresRequested = ['pg', 'postgres', 'postgresql'].includes(client);
+
+  if (postgresRequested) {
+    // Never silently fall back to an ephemeral SQLite file when production
+    // explicitly requests PostgreSQL.
+    if (!pgUrl.trim()) {
+      throw new Error(
+        'DATABASE_CLIENT=pg exige SUPABASE_DB_URL ou DATABASE_URL. Refus du fallback SQLite.',
+      );
+    }
     return buildPostgresKnexConfig(pgUrl);
+  }
+
+  if (process.env.NODE_ENV === 'production' && process.env.VERCEL) {
+    throw new Error(
+      'SQLite ne peut pas être utilisé comme base métier sur Vercel. Configurez DATABASE_CLIENT=pg et DATABASE_URL.',
+    );
   }
 
   ensureParentDir(dbPath);
