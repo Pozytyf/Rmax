@@ -2,42 +2,36 @@
 
 Branche : `fix/chore-1-postgresql-persistence`
 
-## État d'avancement : tranche de sécurisation initiale
+## État : sécurisation initiale, migration métier non terminée
 
-Cette branche démarre le durcissement de la configuration PostgreSQL. Elle ne constitue pas encore la migration complète des repositories métier.
-
-## Constat confirmé
-
-- `src/server/db.ts` crée une instance `better-sqlite3` et expose une API synchrone.
-- Les repositories historiques appellent directement `getDb()` et utilisent `.prepare()`.
-- `src/server/knex.ts` expose une connexion Knex distincte.
+### Constat confirmé
+- `src/server/db.ts` et les repositories métier utilisent encore `better-sqlite3` et des appels synchrones.
+- `src/server/knex.ts` expose une connexion Knex séparée.
 - `api/index.ts` lançait les migrations Knex, interceptait leurs erreurs, puis initialisait SQLite.
 - `vercel.json` demande PostgreSQL, mais cela ne migre pas les repositories métier vers PostgreSQL.
+- La configuration TLS PostgreSQL désactivait la vérification des certificats (`rejectUnauthorized: false`) dans les deux pools observés.
 
-## Changements réalisés dans cette tranche
+### Corrections effectuées dans cette branche
+- Refus du fallback SQLite lorsque PostgreSQL est explicitement demandé sans URL de connexion.
+- Refus de SQLite en production Vercel.
+- `getDb()` refuse SQLite lorsque PostgreSQL est explicitement demandé.
+- L'API refuse de démarrer si PostgreSQL est requis mais inaccessible.
+- Les erreurs de migrations Knex ne sont plus ignorées.
+- Vérification des certificats TLS activée pour les connexions PostgreSQL/Supabase.
+- Ajout de tests de configuration PostgreSQL et mise à jour du test TLS.
+- Ajout de `npm run test:postgres-config`.
+- Ajout d'un pipeline GitLab avec typecheck, tests existants, test de configuration PostgreSQL et build reproductible à partir de `bun.lock`.
 
-- La sélection explicite de PostgreSQL échoue si `SUPABASE_DB_URL` et `DATABASE_URL` sont absents ; aucun fallback SQLite silencieux n'est accepté dans Knex.
-- Le runtime Vercel en production refuse la configuration SQLite.
-- `getDb()` refuse désormais de créer/utiliser SQLite lorsque PostgreSQL est explicitement demandé ou en production Vercel. Cela empêche le mélange silencieux des deux moteurs.
-- L'initialisation API échoue si PostgreSQL est requis mais inaccessible.
-- Les erreurs de migration Knex ne sont plus ignorées.
-- Ajout de tests ciblés pour les règles de configuration.
-- Ajout de la commande `npm run test:postgres-config`.
+### Limite bloquante
+Les repositories `authRepository`, `publicRepository`, `restaurantRepository`, `operationsRepository`, `superadminRepository` et plusieurs services appellent encore SQLite de façon synchrone. La migration de ces couches vers Knex/PostgreSQL exige une conversion asynchrone coordonnée de leurs consommateurs. Le garde-fou ajouté fait échouer ces accès lorsqu'un environnement PG est activé : la branche n'est donc pas déployable tant que la migration n'est pas achevée.
 
-## Limite importante
+### Suite obligatoire
+1. Migrer tous les repositories et appels directs DB vers PostgreSQL asynchrone.
+2. Retirer les imports SQLite des chemins runtime production.
+3. Revoir toutes les migrations et requêtes SQL sur PostgreSQL réel.
+4. Écrire l'outil de migration de données SQLite → PostgreSQL avec reprise et contrôles de sommes.
+5. Tester transactions, rollback, concurrence, persistance multi-instance et restauration.
+6. Valider les flux métier avant de passer la MR en Ready.
 
-Les repositories métier utilisent encore SQLite. En conséquence, lorsque PostgreSQL est demandé, les opérations métier qui appellent `getDb()` échoueront volontairement jusqu'à leur migration. Cette branche ne doit donc pas être déployée telle quelle en production. Ce garde-fou évite de continuer à écrire dans une base SQLite éphémère et de faire croire que les données sont persistantes.
-
-## Travaux nécessaires avant mise en production
-
-1. Migrer `authRepository`, `publicRepository`, `restaurantRepository`, `operationsRepository`, `superadminRepository` et les autres accès directs à `getDb()`.
-2. Adapter les services et controllers aux méthodes asynchrones.
-3. Vérifier la compatibilité PostgreSQL de toutes les migrations et requêtes SQL.
-4. Mettre en place une migration de données SQLite vers PostgreSQL avec contrôles de cohérence.
-5. Ajouter des tests d'intégration sur un vrai PostgreSQL.
-6. Vérifier les transactions, verrous, contraintes, index et concurrence.
-7. Retirer définitivement SQLite des chemins de production après migration de tous les repositories.
-
-## Déploiement
-
-Ne pas déployer cette tranche seule sur la production actuelle. Elle constitue un garde-fou de développement, pas une migration terminée. La mise en production doit attendre la migration des repositories et la validation des tests PostgreSQL.
+### Déploiement
+Ne pas fusionner ni déployer cette branche en l'état. Le pipeline nouvellement ajouté doit d'abord être exécuté et ses résultats examinés. Aucune migration de données de production n'a été effectuée.

@@ -1,0 +1,45 @@
+image: oven/bun:1
+
+stages:
+  - validate
+
+variables:
+  NODE_ENV: test
+  DATABASE_CLIENT: sqlite
+  BUN_INSTALL_CACHE_DIR: "$CI_PROJECT_DIR/.bun/install/cache"
+
+cache:
+  key:
+    files:
+      - bun.lock
+  paths:
+    - .bun/install/cache/
+
+before_script:
+  - bun --version
+  - bun install --frozen-lockfile
+
+typecheck:
+  stage: validate
+  script:
+    - bun run lint
+
+postgres-runtime-config:
+  stage: validate
+  script:
+    - bun run test:postgres-config
+
+existing-tests:
+  stage: validate
+  script:
+    - bun run test
+
+production-build:
+  stage: validate
+  script:
+    - bun run build
+  artifacts:
+    when: on_success
+    expire_in: 7 days
+    paths:
+      - dist/
