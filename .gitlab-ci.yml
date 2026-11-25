@@ -17,7 +17,7 @@ cache:
 
 before_script:
   - bun --version
-  - bun install --frozen-lockfile
+  - bun install --frozen-lockfile --trust
 
 typecheck:
   stage: validate
