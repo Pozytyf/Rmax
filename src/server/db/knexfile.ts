@@ -77,7 +77,7 @@ export function buildPostgresKnexConfig(
     client: 'pg',
     connection: {
       connectionString,
-      ssl: useSsl ? { rejectUnauthorized: false } : false,
+      ssl: useSsl ? { rejectUnauthorized: true } : false,
     },
     pool: {
       min: Number(process.env.DB_POOL_MIN || (process.env.VERCEL ? 0 : 2)),

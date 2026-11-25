@@ -25,7 +25,7 @@ test('1. Supabase DB URL detection & automatic SSL config in Knex', () => {
   assert.equal(cfg.client, 'pg');
   assert.deepEqual(
     (cfg.connection as { ssl: unknown }).ssl,
-    { rejectUnauthorized: false },
+    { rejectUnauthorized: true },
   );
 });
 
