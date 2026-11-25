@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createExpressApp } from '../src/server/app.ts';
-import { runKnexMigrations } from '../src/server/knex.ts';
+import { assertKnexMigrationsCurrent } from '../src/server/knex.ts';
 import {
   checkSupabaseHealth,
   getSupabaseAdminClient,
@@ -32,9 +32,9 @@ async function ensureInitialized(): Promise<void> {
         );
       }
 
-      // Les erreurs de migration doivent empêcher le démarrage : les ignorer
-      // pourrait laisser le schéma en retard par rapport au code déployé.
-      await runKnexMigrations();
+      // Les migrations sont exécutées dans une étape de release unique.
+      // Une instance serverless ne doit jamais modifier le schéma à son démarrage.
+      await assertKnexMigrationsCurrent();
     })().catch((err) => {
       initPromise = null;
       throw err;
