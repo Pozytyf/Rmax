@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertKnexMigrationsCurrent, getKnex } from '../server/knex.ts';
-import { checkSupabaseHealth } from '../server/lib/supabase.ts';
+import { assertKnexMigrationsCurrent, getKnex } from '../src/server/knex.ts';
+import { checkSupabaseHealth } from '../src/server/lib/supabase.ts';
 
 test('selected PostgreSQL pool is reachable and schema is fully migrated', async () => {
   const health = await checkSupabaseHealth();
