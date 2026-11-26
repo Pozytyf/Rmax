@@ -90,17 +90,17 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur chargement caisse.');
     }
   },
-  openRegister(req: Request, res: Response) {
+  async openRegister(req: Request, res: Response) {
     try {
-      const session = operationsService.openRegister(req.auth!, req.body || {});
+      const session = await operationsService.openRegister(req.auth!, req.body || {});
       res.status(201).json({ session });
     } catch (err) {
       handleControllerError(res, err, 'Erreur ouverture de caisse.');
     }
   },
-  closeRegister(req: Request, res: Response) {
+  async closeRegister(req: Request, res: Response) {
     try {
-      const report = operationsService.closeRegister(req.auth!, req.body || {});
+      const report = await operationsService.closeRegister(req.auth!, req.body || {});
       res.json({ report });
     } catch (err) {
       handleControllerError(res, err, 'Erreur clôture Z.');
