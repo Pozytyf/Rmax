@@ -402,6 +402,75 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal((await knexOperationsReadRepository.findStaffShifts(restaurantId)).some((row) => row.id === shift.id), true);
     assert.equal(await knexOperationsReadRepository.deleteShift(restaurantId, shift.id), 1);
 
+    const stockId = `it_stock_${suffix}`;
+    await db('stocks').insert({
+      id: stockId, restaurant_id: restaurantId, name: 'Stock integration',
+      unit: 'kg', stock_section: 'KITCHEN', quantity: 5,
+      min_threshold: 1, unit_cost_xof: 1000, supplier_name: '',
+      updated_at: now,
+    });
+    const inventory = await db.transaction((trx) =>
+      knexOperationsReadRepository.createInventoryCount(trx, {
+        restaurantId, title: 'Inventaire test', stockSection: 'KITCHEN',
+        notes: 'integration', createdByName: 'Menu Test Owner', userId,
+        lines: [{ stockId, countedQty: 8 }],
+      }),
+    );
+    assert.equal(inventory.totalVarianceXof, 3000);
+    const inventoryRead = await knexOperationsReadRepository.findInventoryCounts(restaurantId);
+    assert.equal(inventoryRead.find((row) => row.id === inventory.id)?.lines[0]?.varianceQty, 3);
+
+    const waste = await db.transaction((trx) =>
+      knexOperationsReadRepository.recordTypedWaste(trx, {
+        restaurantId, stockId, quantity: 2, category: 'EXPIRED',
+        reason: 'integration waste', userId,
+      }),
+    );
+    assert.equal(waste.quantity, 6);
+    await assert.rejects(
+      db.transaction((trx) => knexOperationsReadRepository.recordTypedWaste(trx, {
+        restaurantId, stockId, quantity: 7, category: 'BROKEN',
+        reason: 'overdraw should fail', userId,
+      })),
+      /Stock insuffisant/,
+    );
+
+    const clockIn = await db.transaction((trx) =>
+      knexOperationsReadRepository.toggleStaffClock(trx, {
+        restaurantId, userId, action: 'AUTO', notes: 'integration in',
+        actorUserId: userId, actorEmail: email, actorRole: 'OWNER',
+      }),
+    );
+    assert.equal(clockIn.action, 'CLOCK_IN');
+    const clockOut = await db.transaction((trx) =>
+      knexOperationsReadRepository.toggleStaffClock(trx, {
+        restaurantId, userId, action: 'AUTO', notes: 'integration out',
+        actorUserId: userId, actorEmail: email, actorRole: 'OWNER',
+      }),
+    );
+    assert.equal(clockOut.action, 'CLOCK_OUT');
+    assert.ok(clockOut.durationMinutes >= 1);
+
+    const proforma = await db.transaction((trx) =>
+      knexOperationsReadRepository.createB2bInvoice(trx, {
+        restaurantId, id: `it_b2b_${suffix}`, docType: 'PROFORMA',
+        clientName: 'Client test', clientCompany: '', clientTaxId: '',
+        clientEmail: '', clientPhone: '', clientAddress: '',
+        items: [{ description: 'Prestation', quantity: 2, unitPriceXof: 1000, lineTotalXof: 2000 }],
+        subtotalHtXof: 2000, taxRatePercent: 18, taxXof: 360,
+        totalTtcXof: 2360, status: 'SENT', dueDate: null, notes: 'integration',
+      }),
+    );
+    assert.match(proforma.invoiceNumber, /^PROF-/);
+    assert.equal(await knexOperationsReadRepository.updateB2bInvoiceStatus(restaurantId, proforma.id, 'ACCEPTED'), 1);
+    const converted = await db.transaction((trx) =>
+      knexOperationsReadRepository.convertProformaToInvoice(trx, {
+        restaurantId, proformaId: proforma.id, newId: `it_b2b_invoice_${suffix}`,
+      }),
+    );
+    assert.equal(converted.invoice.docType, 'INVOICE');
+    assert.match(converted.invoice.invoiceNumber, /^FACT-/);
+
     const categories = await knexRestaurantStockRepository.findMenuCategories(restaurantId);
     const items = await knexRestaurantStockRepository.findMenuItems(restaurantId);
     assert.ok(categories.some((row) => String(row.id) === String(category.id)));
@@ -431,6 +500,12 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal((await knexOperationsReadRepository.findPromotions(`other_${suffix}`)).length, 0);
   } finally {
     if (promotionId) await db('promotions').where({ id: promotionId, restaurant_id: restaurantId }).del();
+    await db('b2b_invoices').where({ restaurant_id: restaurantId }).del();
+    await db('staff_time_clocks').where({ restaurant_id: restaurantId }).del();
+    await db('inventory_count_lines').whereIn('inventory_count_id', db('inventory_counts').select('id').where({ restaurant_id: restaurantId })).del();
+    await db('inventory_counts').where({ restaurant_id: restaurantId }).del();
+    await db('stock_movements').where({ restaurant_id: restaurantId }).del();
+    await db('stocks').where({ restaurant_id: restaurantId }).del();
     await db('cash_register_sessions').where({ restaurant_id: restaurantId }).del();
     if (comboId) await db('menu_combos').where({ id: comboId, restaurant_id: restaurantId }).del();
     await db('menu_items').where({ id: menuItemId, restaurant_id: restaurantId }).del();
