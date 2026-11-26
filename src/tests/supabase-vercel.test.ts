@@ -204,7 +204,8 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   const tenantRlsMigrationSql = fs.readFileSync(tenantRlsMigrationPath, 'utf8');
   assert.equal(tenantRlsMigrationSql.includes('tenant_isolation_order_items'), true);
   assert.equal(tenantRlsMigrationSql.includes('REVOKE ALL ON TABLE public.users FROM anon, authenticated'), true);
-  assert.equal(tenantRlsMigrationSql.includes('CREATE POLICY tenant_isolation_orders'), true);
+  assert.equal(tenantRlsMigrationSql.includes("'orders'"), true);
+  assert.equal(tenantRlsMigrationSql.includes('restaurant_id = public.current_tenant_id()'), true);
 
   const denyInternalMigrationPath = path.resolve(
     process.cwd(),
