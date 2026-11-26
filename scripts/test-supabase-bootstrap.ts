@@ -60,6 +60,7 @@ async function main(): Promise<void> {
       '202611260014_deny_api_access_to_internal_tables.sql',
       '202611260015_index_operational_foreign_keys.sql',
       '202611260017_add_option_groups_json_to_menu_items.sql',
+      '202611260018_add_public_order_fields.sql',
     ]) {
       const migrationPath = path.resolve(process.cwd(), 'supabase/migrations', migration);
       await client.query(await fs.readFile(migrationPath, 'utf8'));
@@ -103,6 +104,11 @@ async function main(): Promise<void> {
       "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'menu_items' AND column_name = 'option_groups_json') AS exists",
     );
     assert.equal(optionGroupsColumn.rows[0]?.exists, true, 'Bootstrap schema is missing menu_items.option_groups_json');
+
+    const publicOrderColumns = await client.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name IN ('customer_phone', 'delivery_address', 'delivery_zone', 'delivery_fee_xof', 'scheduled_slot', 'promo_code', 'loyalty_points_used', 'loyalty_points_earned')",
+    );
+    assert.equal(publicOrderColumns.rowCount, 8, 'Bootstrap schema is missing public order fields');
 
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",
