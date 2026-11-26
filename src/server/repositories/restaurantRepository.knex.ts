@@ -600,6 +600,85 @@ export class KnexRestaurantStockRepository {
     return { poNumber: String(po.po_number), supplierName: String(po.supplier_name) };
   }
 
+  async findOrdersWithItems(rid: string) {
+    const orders = await this.db('orders as o')
+      .leftJoin('dining_tables as t', function () {
+        this.on('t.id', '=', 'o.table_id').andOn('t.restaurant_id', '=', 'o.restaurant_id');
+      })
+      .select({
+        id: 'o.id', restaurantId: 'o.restaurant_id',
+        orderNumber: 'o.order_number', orderType: 'o.order_type',
+        tableId: 'o.table_id', tableLabel: 't.label', tableZone: 't.zone',
+        customerName: 'o.customer_name', customerPhone: 'o.customer_phone',
+        deliveryAddress: 'o.delivery_address', deliveryZone: 'o.delivery_zone',
+        deliveryFeeXof: 'o.delivery_fee_xof', scheduledSlot: 'o.scheduled_slot',
+        promoCode: 'o.promo_code', loyaltyPointsUsed: 'o.loyalty_points_used',
+        loyaltyPointsEarned: 'o.loyalty_points_earned', status: 'o.status',
+        subtotalXof: 'o.subtotal_xof', discountXof: 'o.discount_xof',
+        taxXof: 'o.tax_xof', totalXof: 'o.total_xof', paidXof: 'o.paid_xof',
+        notes: 'o.notes', createdByUserId: 'o.created_by_user_id',
+        createdAt: 'o.created_at', updatedAt: 'o.updated_at',
+      })
+      .where('o.restaurant_id', rid)
+      .orderBy('o.created_at', 'desc')
+      .limit(100);
+    if (!orders.length) return [];
+    const orderIds = orders.map((order) => String(order.id));
+    const items = await this.db('order_items')
+      .select({
+        id: 'id', orderId: 'order_id', menuItemId: 'menu_item_id',
+        name: 'name', station: 'station', unitPriceXof: 'unit_price_xof',
+        optionsSummary: 'options_summary', optionsDeltaXof: 'options_delta_xof',
+        quantity: 'quantity', lineTotalXof: 'line_total_xof',
+        notes: 'notes', prepStatus: 'prep_status',
+      })
+      .whereIn('order_id', orderIds)
+      .orderBy('id', 'asc');
+    const byOrder = new Map<string, Array<Record<string, unknown>>>();
+    for (const item of items) {
+      const key = String(item.orderId);
+      const list = byOrder.get(key) || [];
+      list.push(item);
+      byOrder.set(key, list);
+    }
+    return orders.map((order) => ({
+      ...order,
+      customerPhone: String(order.customerPhone || ''),
+      deliveryAddress: String(order.deliveryAddress || ''),
+      deliveryZone: String(order.deliveryZone || ''),
+      deliveryFeeXof: Number(order.deliveryFeeXof || 0),
+      scheduledSlot: String(order.scheduledSlot || ''),
+      promoCode: String(order.promoCode || ''),
+      loyaltyPointsUsed: Number(order.loyaltyPointsUsed || 0),
+      loyaltyPointsEarned: Number(order.loyaltyPointsEarned || 0),
+      items: byOrder.get(String(order.id)) || [],
+    }));
+  }
+
+  async findOrderForUpdate(orderId: string, rid: string, trx: Knex.Transaction = this.db as Knex.Transaction) {
+    return trx('orders')
+      .select('id', 'table_id', 'total_xof', 'paid_xof', 'status')
+      .where({ id: orderId, restaurant_id: rid })
+      .forUpdate().first();
+  }
+
+  async updateOrderAndPrepStatus(
+    trx: Knex.Transaction, orderId: string, rid: string, status: string, tableId: string | null,
+  ): Promise<number> {
+    const updated = await trx('orders')
+      .where({ id: orderId, restaurant_id: rid })
+      .update({ status, updated_at: new Date().toISOString() });
+    if (updated !== 1) return 0;
+    if (status === 'IN_PREPARATION') {
+      await trx('order_items').where({ order_id: orderId, prep_status: 'PENDING' }).update({ prep_status: 'PREPARING' });
+    } else if (status === 'READY' || status === 'SERVED') {
+      await trx('order_items').where({ order_id: orderId }).update({ prep_status: status });
+    } else if (status === 'CANCELLED' && tableId) {
+      await trx('dining_tables').where({ id: tableId, restaurant_id: rid }).update({ status: 'AVAILABLE' });
+    }
+    return updated;
+  }
+
   async deductStocksForOrderItems(
     trx: Knex.Transaction,
     params: {
