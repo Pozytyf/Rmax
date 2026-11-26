@@ -1,8 +1,8 @@
 import type { Server as HttpServer } from 'node:http';
 import crypto from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import { parseCookieHeader, resolveAuthContext } from './auth.ts';
-import { getDb } from './db.ts';
+import { parseCookieHeader, resolveAuthContextWithKnex } from './auth.ts';
+import { getKnex } from './knex.ts';
 
 interface ClientMeta {
   ws: WebSocket;
@@ -67,30 +67,33 @@ export function handleIncomingClusterEnvelope(envelope: ClusterEnvelope): void {
   );
 }
 
-function authorizeWebSocketRoom(
+async function authorizeWebSocketRoom(
   room: string,
   token: string | null,
-): boolean {
-  if (/^order:[a-zA-Z0-9_-]+$/.test(room)) {
-    return true;
-  }
-  if (!token) {
-    return false;
-  }
-  const auth = resolveAuthContext(getDb(), token);
-  if (!auth) {
-    return false;
-  }
-  if (room === 'superadmin') {
-    return auth.role === 'SUPER_ADMIN';
-  }
+): Promise<boolean> {
+  if (!token) return false;
+
+  const auth = await resolveAuthContextWithKnex(token);
+  if (!auth) return false;
+
+  if (room === 'superadmin') return auth.role === 'SUPER_ADMIN';
+
   if (room.startsWith('restaurant:')) {
     const targetRid = room.slice('restaurant:'.length);
-    return (
-      Boolean(targetRid) &&
-      (auth.role === 'SUPER_ADMIN' || auth.restaurantId === targetRid)
-    );
+    return Boolean(targetRid) && (auth.role === 'SUPER_ADMIN' || auth.restaurantId === targetRid);
   }
+
+  const orderMatch = /^order:([a-zA-Z0-9_-]+)$/.exec(room);
+  if (orderMatch) {
+    if (auth.role === 'SUPER_ADMIN') return true;
+    if (!auth.restaurantId) return false;
+    const order = await getKnex()('orders')
+      .select('restaurant_id')
+      .where({ id: orderMatch[1] })
+      .first();
+    return Boolean(order && order.restaurant_id === auth.restaurantId);
+  }
+
   return false;
 }
 
@@ -124,31 +127,30 @@ export function setupWebSocketServer(server: HttpServer): void {
     const token =
       bearer || cookies.restomax_token || url.searchParams.get('token') || null;
 
-    if (!authorizeWebSocketRoom(room, token)) {
-      ws.close(1008, 'Accès WebSocket non autorisé.');
-      return;
-    }
+    void authorizeWebSocketRoom(room, token)
+      .then((allowed) => {
+        if (!allowed || ws.readyState !== WebSocket.OPEN) {
+          ws.close(1008, 'Accès WebSocket non autorisé.');
+          return;
+        }
 
-    const meta: ClientMeta = { ws, room };
-    clients.add(meta);
-
-    ws.send(
-      JSON.stringify({
-        type: 'connection:ready',
-        room,
-        instanceId: INSTANCE_ID,
-        timestamp: new Date().toISOString(),
-      }),
-    );
-
-    ws.on('close', () => {
-      clients.delete(meta);
-    });
-
-    ws.on('error', () => {
-      clients.delete(meta);
-    });
-  });
+        const meta: ClientMeta = { ws, room };
+        clients.add(meta);
+        ws.send(
+          JSON.stringify({
+            type: 'connection:ready',
+            room,
+            instanceId: INSTANCE_ID,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+        ws.on('close', () => clients.delete(meta));
+        ws.on('error', () => clients.delete(meta));
+      })
+      .catch(() => {
+        ws.close(1011, 'Impossible de vérifier les autorisations WebSocket.');
+      });
+  });;
 }
 
 export function broadcastToRoom(
