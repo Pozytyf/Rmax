@@ -393,6 +393,14 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     );
     assert.equal(closedRegister.status, 'CLOSED');
 
+    const shift = await knexOperationsReadRepository.createShift({
+      restaurantId, userId, shiftDate: now.slice(0, 10),
+      startTime: '08:00', endTime: '16:00', notes: 'integration shift',
+    });
+    assert.equal(shift.userId, userId);
+    assert.equal((await knexOperationsReadRepository.findStaffShifts(restaurantId)).some((row) => row.id === shift.id), true);
+    assert.equal(await knexOperationsReadRepository.deleteShift(restaurantId, shift.id), 1);
+
     const categories = await knexRestaurantStockRepository.findMenuCategories(restaurantId);
     const items = await knexRestaurantStockRepository.findMenuItems(restaurantId);
     assert.ok(categories.some((row) => String(row.id) === String(category.id)));
