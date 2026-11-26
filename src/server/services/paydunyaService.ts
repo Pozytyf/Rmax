@@ -35,6 +35,8 @@ export interface PaydunyaConfirmResult {
   completed: boolean;
   status: 'completed' | 'pending' | 'cancelled' | 'failed';
   receiptUrl?: string;
+  amountXof?: number;
+  currency?: string;
   providerMessage?: string;
 }
 
@@ -346,14 +348,22 @@ export async function confirmPaydunyaInvoice(
       status?: string;
       receipt_url?: string;
       response_text?: string;
+      invoice?: { total_amount?: number | string; currency?: string };
+      total_amount?: number | string;
+      currency?: string;
     };
     const st = String(data.status || '').toLowerCase();
+    const amountRaw = data.invoice?.total_amount ?? data.total_amount;
+    const amountXof = amountRaw === undefined ? undefined : Number(amountRaw);
+    const currency = String(data.invoice?.currency || data.currency || '').toUpperCase() || undefined;
     if (resp.ok && data.response_code === '00' && st === 'completed') {
       return {
         completed: true,
         status: 'completed',
         receiptUrl:
           typeof data.receipt_url === 'string' ? data.receipt_url : undefined,
+        amountXof: Number.isFinite(amountXof) ? amountXof : undefined,
+        currency,
       };
     }
     if (st === 'cancelled' || st === 'canceled') {
