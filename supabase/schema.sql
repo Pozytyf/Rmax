@@ -137,6 +137,17 @@ CREATE TABLE IF NOT EXISTS public.restaurant_members (
   UNIQUE(restaurant_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS public.auth_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  token_type TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS public.sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -605,6 +616,7 @@ CREATE INDEX IF NOT EXISTS idx_tenants_status ON public.tenants(status);
 CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON public.users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_users_tenant_status ON public.users(tenant_id, status);
 CREATE INDEX IF NOT EXISTS idx_users_tenant_role ON public.users(tenant_id, role);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_hash ON public.auth_tokens(token_hash, token_type);
 CREATE INDEX IF NOT EXISTS idx_orders_restaurant_created ON public.orders(restaurant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_restaurant_status ON public.orders(restaurant_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_restaurant_order_number ON public.orders(restaurant_id, order_number);
@@ -828,8 +840,6 @@ REVOKE ALL ON TABLE public.users FROM anon, authenticated;
 REVOKE ALL ON TABLE public.sessions FROM anon, authenticated;
 REVOKE ALL ON TABLE public.auth_tokens FROM anon, authenticated;
 REVOKE ALL ON TABLE public.schema_migrations FROM anon, authenticated;
-REVOKE ALL ON TABLE public.knex_migrations FROM anon, authenticated;
-REVOKE ALL ON TABLE public.knex_migrations_lock FROM anon, authenticated;
 
 -- Explicit deny policies for sensitive/internal tables. These tables are only
 -- accessed by the trusted server-side database connection, never by Data API roles.
@@ -846,13 +856,15 @@ BEGIN
     'knex_migrations_lock'
   ]
   LOOP
-    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', tbl);
-    EXECUTE format('DROP POLICY IF EXISTS deny_api_access_%I ON public.%I', tbl, tbl);
-    EXECUTE format(
-      'CREATE POLICY deny_api_access_%I ON public.%I FOR ALL USING (FALSE) WITH CHECK (FALSE)',
-      tbl, tbl
-    );
-    EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon, authenticated', tbl);
+    IF to_regclass(format('public.%I', tbl)) IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', tbl);
+      EXECUTE format('DROP POLICY IF EXISTS deny_api_access_%I ON public.%I', tbl, tbl);
+      EXECUTE format(
+        'CREATE POLICY deny_api_access_%I ON public.%I FOR ALL USING (FALSE) WITH CHECK (FALSE)',
+        tbl, tbl
+      );
+      EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon, authenticated', tbl);
+    END IF;
   END LOOP;
 END
 $block$;
