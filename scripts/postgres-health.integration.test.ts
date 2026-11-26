@@ -63,4 +63,9 @@ test('selected PostgreSQL pool is reachable and schema is fully migrated', async
     );
     assert.equal(fk.rows.length, 1, `Missing foreign key ${table}.${column} -> ${target}`);
   }
+
+  const orderNumberIndex = await db.raw(
+    "SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'orders' AND indexname = 'uq_orders_restaurant_order_number'",
+  );
+  assert.equal(orderNumberIndex.rows.length, 1, 'Order number unique index is missing');
 });
