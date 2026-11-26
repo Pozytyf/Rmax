@@ -629,8 +629,11 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'menu:updated', { itemId });
   }
 
-  getOrders(rid: string) {
-    return restaurantRepository.findOrdersWithItems(rid);
+  async getOrders(rid: string) {
+    this.ensureTenantId(rid);
+    return usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findOrdersWithItems(rid)
+      : restaurantRepository.findOrdersWithItems(rid);
   }
 
   async createPosOrder(auth: AuthContext, body: Record<string, unknown>) {
@@ -943,7 +946,7 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     };
   }
 
-  updateOrderStatus(auth: AuthContext, orderId: string, status: unknown) {
+  async updateOrderStatus(auth: AuthContext, orderId: string, status: unknown) {
     const rid = auth.restaurantId!;
     const valid = [
       'PENDING',
@@ -964,17 +967,22 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       throw new AppError(403, 'Permission insuffisante.');
     }
 
-    const order = restaurantRepository.findOrderForUpdate(orderId, rid);
-    if (!order) {
-      throw new AppError(404, 'Commande introuvable.');
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const order = await knexRestaurantStockRepository.findOrderForUpdate(orderId, rid, trx);
+        if (!order) throw new AppError(404, 'Commande introuvable.');
+        const updated = await knexRestaurantStockRepository.updateOrderAndPrepStatus(
+          trx, orderId, rid, String(status), order.table_id ? String(order.table_id) : null,
+        );
+        if (!updated) throw new AppError(404, 'Commande introuvable.');
+      });
+      broadcastRestaurantEvent(rid, 'order:updated', { orderId, status });
+      broadcastOrderTrackerEvent(orderId, 'order:updated', { orderId, status });
+      return;
     }
-
-    restaurantRepository.updateOrderAndPrepStatus(
-      orderId,
-      rid,
-      String(status),
-      order.table_id,
-    );
+    const order = restaurantRepository.findOrderForUpdate(orderId, rid);
+    if (!order) throw new AppError(404, 'Commande introuvable.');
+    restaurantRepository.updateOrderAndPrepStatus(orderId, rid, String(status), order.table_id);
 
     broadcastRestaurantEvent(rid, 'order:updated', { orderId, status });
     broadcastOrderTrackerEvent(orderId, 'order:updated', { orderId, status });
