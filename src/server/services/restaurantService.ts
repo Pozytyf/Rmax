@@ -1784,12 +1784,14 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'stock:updated', { stockId });
   }
 
-  getPurchaseOrders(rid: string) {
+  async getPurchaseOrders(rid: string) {
     this.ensureTenantId(rid);
-    return restaurantRepository.findPurchaseOrders(rid);
+    return usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findPurchaseOrders(rid)
+      : restaurantRepository.findPurchaseOrders(rid);
   }
 
-  createPurchaseOrder(auth: AuthContext, body: Record<string, unknown>) {
+  async createPurchaseOrder(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const { supplierName, notes, expectedDate, status, items } = body || {};
     if (typeof supplierName !== 'string' || supplierName.trim().length < 2) {
@@ -1821,7 +1823,9 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       if (!stockId || !Number.isFinite(qty) || qty <= 0) {
         throw new AppError(400, 'Quantité de réapprovisionnement invalide.');
       }
-      const stock = restaurantRepository.findStockById(stockId, rid);
+      const stock = usesPostgresRepositories()
+        ? await knexRestaurantStockRepository.findStockById(stockId, rid)
+        : restaurantRepository.findStockById(stockId, rid);
       if (!stock) {
         throw new AppError(404, 'Ingrédient introuvable pour ce bon de commande.');
       }
@@ -1843,10 +1847,29 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     }
 
     const poId = generateId('po');
-    const count = restaurantRepository.countPurchaseOrders(rid);
-    const poNumber = `PO-${1001 + count}`;
     const now = new Date().toISOString();
     const initialStatus = status === 'ORDERED' ? 'ORDERED' : 'DRAFT';
+    if (usesPostgresRepositories()) {
+      const created = await getKnex().transaction(async (trx) => {
+        const result = await knexRestaurantStockRepository.createPurchaseOrder(trx, {
+          id: poId, rid, supplierName: supplierName.trim(),
+          status: initialStatus, totalCostXof,
+          notes: String(notes || '').trim(),
+          expectedDate: typeof expectedDate === 'string' && expectedDate.trim() ? expectedDate.trim() : null,
+          userId: auth.userId, items: cleanItems,
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'PURCHASE_ORDER_CREATED', targetType: 'PURCHASE_ORDER',
+          targetId: poId, details: `${result.poNumber} · ${supplierName.trim()} (${totalCostXof} FCFA)`,
+        });
+        return result;
+      });
+      return { id: poId, ...created };
+    }
+    const count = restaurantRepository.countPurchaseOrders(rid);
+    const poNumber = `PO-${1001 + count}`;
 
     restaurantRepository.insertPurchaseOrder({
       id: poId,
@@ -1876,17 +1899,32 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     return { id: poId, poNumber, totalCostXof, status: initialStatus };
   }
 
-  updatePurchaseOrderStatus(auth: AuthContext, poId: string, status: unknown) {
+  async updatePurchaseOrderStatus(auth: AuthContext, poId: string, status: unknown) {
     const rid = auth.restaurantId!;
     const validStatuses = ['ORDERED', 'RECEIVED', 'CANCELLED'];
     if (!validStatuses.includes(String(status))) {
       throw new AppError(400, 'Statut de bon de commande invalide.');
     }
 
-    const found = restaurantRepository.findPurchaseOrderById(poId, rid);
-    if (!found) {
-      throw new AppError(404, 'Bon de commande introuvable.');
+    if (usesPostgresRepositories()) {
+      const nextStatus = String(status) as 'ORDERED' | 'RECEIVED' | 'CANCELLED';
+      const result = await getKnex().transaction(async (trx) => {
+        const updated = await knexRestaurantStockRepository.updatePurchaseOrderStatus(trx, {
+          poId, rid, status: nextStatus, userId: auth.userId,
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: `PURCHASE_ORDER_${nextStatus}`, targetType: 'PURCHASE_ORDER',
+          targetId: poId, details: `${updated.poNumber} -> ${nextStatus}`,
+        });
+        return updated;
+      });
+      if (nextStatus === 'RECEIVED') broadcastRestaurantEvent(rid, 'stock:updated', { poId });
+      return result;
     }
+    const found = restaurantRepository.findPurchaseOrderById(poId, rid);
+    if (!found) throw new AppError(404, 'Bon de commande introuvable.');
     if (found.po.status === 'RECEIVED' || found.po.status === 'CANCELLED') {
       throw new AppError(409, 'Ce bon de commande est déjà clôturé.');
     }
