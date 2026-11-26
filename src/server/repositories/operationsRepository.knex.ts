@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { Knex } from 'knex';
 import { getKnex } from '../knex.ts';
 import { mapPromotionRow } from '../services/pricingEngine.ts';
-import type { CustomerReview, MenuCombo, Promotion, TableCall } from '../../types/index.ts';
+import type { B2bInvoice, CustomerReview, MenuCombo, Promotion, StaffShift, StaffTimeClock, TableCall } from '../../types/index.ts';
 
 export class KnexOperationsReadRepository {
   constructor(private readonly db: Knex = getKnex()) {}
@@ -190,6 +190,57 @@ export class KnexOperationsReadRepository {
     return this.db('customer_reviews')
       .where({ id, restaurant_id: rid })
       .update({ reply });
+  }
+
+  async findStaffShifts(rid: string): Promise<StaffShift[]> {
+    const rows = await this.db('staff_shifts')
+      .select({
+        id: 'id', restaurantId: 'restaurant_id', userId: 'user_id',
+        staffName: 'staff_name', role: 'role', shiftDate: 'shift_date',
+        startTime: 'start_time', endTime: 'end_time', notes: 'notes',
+        createdAt: 'created_at',
+      })
+      .where({ restaurant_id: rid })
+      .orderBy('shift_date', 'desc')
+      .orderBy('start_time', 'asc')
+      .limit(120);
+    return rows as StaffShift[];
+  }
+
+  async findStaffTimeClocks(rid: string): Promise<StaffTimeClock[]> {
+    const rows = await this.db('staff_time_clocks')
+      .select({
+        id: 'id', restaurantId: 'restaurant_id', userId: 'user_id',
+        staffName: 'staff_name', role: 'role', clockInAt: 'clock_in_at',
+        clockOutAt: 'clock_out_at', durationMinutes: 'duration_minutes',
+        notes: 'notes',
+      })
+      .where({ restaurant_id: rid })
+      .orderBy('clock_in_at', 'desc')
+      .limit(120);
+    return rows as StaffTimeClock[];
+  }
+
+  async findB2bInvoices(rid: string): Promise<B2bInvoice[]> {
+    const rows = await this.db('b2b_invoices')
+      .where({ restaurant_id: rid })
+      .orderBy('created_at', 'desc')
+      .limit(100);
+    return rows.map((r) => ({
+      id: String(r.id), restaurantId: String(r.restaurant_id),
+      invoiceNumber: String(r.invoice_number),
+      docType: r.doc_type === 'INVOICE' ? 'INVOICE' : 'PROFORMA',
+      clientName: String(r.client_name), clientCompany: String(r.client_company || ''),
+      clientTaxId: String(r.client_tax_id || ''), clientEmail: String(r.client_email || ''),
+      clientPhone: String(r.client_phone || ''), clientAddress: String(r.client_address || ''),
+      items: JSON.parse(String(r.items_json || '[]')),
+      subtotalHtXof: Number(r.subtotal_ht_xof || 0),
+      taxRatePercent: Number(r.tax_rate_percent || 18),
+      taxXof: Number(r.tax_xof || 0), totalTtcXof: Number(r.total_ttc_xof || 0),
+      status: String(r.status || 'DRAFT') as B2bInvoice['status'],
+      dueDate: r.due_date ? String(r.due_date) : null,
+      notes: String(r.notes || ''), createdAt: String(r.created_at),
+    }));
   }
 
   async findPromotions(rid: string): Promise<Promotion[]> {
