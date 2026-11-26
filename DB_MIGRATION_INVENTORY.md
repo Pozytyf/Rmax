@@ -1,6 +1,6 @@
 # Inventaire des accès SQLite à migrer
 
-État du dépôt sur la branche `fix/chore-1-postgresql-persistence` au 26/11/2026.
+État du dépôt sur la branche `fix/chore-1-postgresql-persistence` au 26/11/2026. Les compteurs ci-dessous sont le relevé initial et ne sont pas recalculés après les derniers commits.
 Les nombres ci-dessous sont des occurrences statiques relevées dans les fichiers, pas un décompte d'opérations exécutées en production.
 
 | Fichier | `getDb()` | `.prepare()` | `.exec()` |
@@ -37,6 +37,28 @@ Les nombres ci-dessous sont des occurrences statiques relevées dans les fichier
 - Migration Knex 017 / migration SQL Supabase 018 : téléphone client, adresse/zone/frais de livraison, créneau, code promo et points fidélité sur `orders`.
 - Les champs d'ordres publics ont également été ajoutés au schéma SQLite local, avec ajout idempotent sur les bases locales déjà existantes.
 
+### Second vertical slice — 26/11/2026
+
+Les parcours suivants ont maintenant une implémentation Knex et sont sélectionnés par les services lorsque `DATABASE_CLIENT=pg` :
+
+- Catalogue restaurant : lecture des catégories, articles et recettes, avec jointures stock explicitement limitées au même restaurant.
+- Formules / combos : lecture, création, modification et suppression avec filtres `restaurant_id`.
+- Promotions : lecture, création, modification et suppression avec filtres `restaurant_id`.
+- Appels de table : lecture et acquittement tenant-scopés.
+- Fidélité : historique et ajustement transactionnel avec verrouillage `FOR UPDATE`, journal de mouvement et audit dans la même transaction.
+- Avis clients : lecture et réponse tenant-scopée.
+- Inventaires : lecture des en-têtes et lignes avec jointure des stocks bornée au restaurant.
+- Planning et pointages : lectures des horaires et des temps de présence.
+- Factures B2B : lecture tenant-scopée.
+
+Corrections de revue associées :
+- Suppression d'un bloc de dix méthodes dupliquées dans `publicRepository.knex.ts`, qui créait des implémentations de classe redondantes.
+- Initialisation explicite du pool Knex dans le repository restaurant qui exécute désormais les lectures de menu.
+- Alignement des flags `active`, `available` et `is_daily_special` sur le schéma PostgreSQL existant (entiers 0/1, pas booléens).
+- Suppression de la variable de production `PAYMENT_MODE=TEST`, qui contredisait le mode PayDunya LIVE déclaré dans Vercel.
+
+Un test d'intégration PostgreSQL couvre les lectures menu, le CRUD combos/promotions et l'isolation entre restaurants. Il est ajouté à `scripts/postgres-health.integration.test.ts`, mais n'a pas encore pu être exécuté dans GitLab CI.
+
 ## Conséquence
 
 Le basculement de la variable `DATABASE_CLIENT=pg` ne suffit pas. Ces appels synchrones doivent être remplacés par des opérations Knex asynchrones et leurs consommateurs doivent être adaptés.
@@ -54,8 +76,8 @@ La conversion doit conserver :
 
 1. Terminer `authRepository` côté superadmin et migrer les écritures publiques/commandes/paiements de `publicRepository` + `publicService`.
 2. `restaurantRepository` + `restaurantService` : POS, commandes, tables, menus, stocks, finance.
-3. `operationsRepository` + `operationsService`.
-5. `superadminRepository` + `superadminService`.
+3. Terminer `operationsRepository` + `operationsService` (caisse, inventaires/écarts, déchets, pointages, écritures B2B et multi-sites).
+4. `superadminRepository` + `superadminService`.
 6. `BaseRepository`, `BaseService` et suppression des accès SQLite résiduels.
 7. Migration des données et validation complète multi-instance.
 
