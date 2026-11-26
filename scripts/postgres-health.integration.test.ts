@@ -5,6 +5,7 @@ import { checkSupabaseHealth } from '../src/server/lib/supabase.ts';
 import crypto from 'node:crypto';
 import { knexAuthRepository } from '../src/server/repositories/authRepository.knex.ts';
 import { recordAuditWithKnex, resolveAuthContextWithKnex, signSessionToken } from '../src/server/auth.ts';
+import { knexPublicRepository } from '../src/server/repositories/publicRepository.knex.ts';
 
 test('selected PostgreSQL pool is reachable and schema is fully migrated', async () => {
   const health = await checkSupabaseHealth();
@@ -168,6 +169,131 @@ test('PostgreSQL authentication repository persists tenant, user, session and on
     await db('qr_codes').where({ restaurant_id: restaurantId }).del();
     await db('dining_tables').where({ restaurant_id: restaurantId }).del();
     await db('menu_categories').where({ restaurant_id: restaurantId }).del();
+    await db('users').where({ id: userId }).del();
+    await db('restaurants').where({ id: restaurantId }).del();
+    await db('tenants').where({ id: restaurantId }).del();
+  }
+});
+
+
+test('PostgreSQL public catalog and order tracking reads are tenant/table scoped', async () => {
+  const db = getKnex();
+  const suffix = crypto.randomUUID().replace(/-/g, '');
+  const restaurantId = `it_pub_rest_${suffix}`;
+  const userId = `it_pub_user_${suffix}`;
+  const memberId = `it_pub_member_${suffix}`;
+  const subscriptionId = `it_pub_sub_${suffix}`;
+  const sessionId = `it_pub_session_${suffix}`;
+  const slug = `it-pub-${suffix}`;
+  const email = `it-pub-${suffix}@example.invalid`;
+  const qrToken = `${slug}-t1-v1`;
+  const orderId = `it_pub_order_${suffix}`;
+  const storefrontOrderId = `it_pub_store_order_${suffix}`;
+  const menuItemId = `it_pub_item_${suffix}`;
+  const now = new Date().toISOString();
+  const future = new Date(Date.now() + 60_000).toISOString();
+  let tableId = '';
+
+  try {
+    const plan = await knexAuthRepository.findPlanForRegistration('ESSENTIEL');
+    assert.ok(plan?.id);
+    await db.transaction(async (trx) => {
+      await knexAuthRepository.createRestaurantWithOwnerAndStarterData({
+        restaurantId, restaurantName: 'Public Repository Integration',
+        slug, email, phone: '+22500000001', city: 'Abidjan',
+        userId, ownerName: 'Public Test Owner', passwordHash: 'not-used',
+        memberId, subId: subscriptionId, planId: plan.id,
+        trialEndsAt: future, sessionId, sessionExpiresAt: future,
+        userAgent: 'public-repository-test', now,
+      }, trx);
+    });
+
+    const table = await db('dining_tables').where({ restaurant_id: restaurantId }).orderBy('label').first();
+    assert.ok(table?.id);
+    tableId = String(table.id);
+
+    await db('menu_items').insert({
+      id: menuItemId, restaurant_id: restaurantId,
+      category_id: (await db('menu_categories').where({ restaurant_id: restaurantId }).first()).id,
+      name: 'Plat de test', description: 'Test PostgreSQL', price_xof: 2500,
+      available: 1, sort_order: 1, options_json: '[]', option_groups_json: '[]',
+      created_at: now,
+    });
+
+    await db('orders').insert({
+      id: orderId, restaurant_id: restaurantId, order_number: `IT-${suffix}-1`,
+      order_type: 'QR_TABLE', table_id: tableId, customer_name: 'Client QR',
+      customer_phone: '+22500000002', status: 'PENDING', subtotal_xof: 2500,
+      discount_xof: 0, tax_xof: 0, total_xof: 2500, paid_xof: 0,
+      idempotency_key: `it-${suffix}`, notes: '', created_at: now, updated_at: now,
+    });
+    await db('order_items').insert({
+      id: `it_pub_line_${suffix}`, order_id: orderId, menu_item_id: menuItemId,
+      name: 'Plat de test', station: 'KITCHEN', unit_price_xof: 2500,
+      options_summary: '', options_delta_xof: 0, quantity: 1,
+      line_total_xof: 2500, notes: '', prep_status: 'PENDING',
+    });
+
+    await db('orders').insert({
+      id: storefrontOrderId, restaurant_id: restaurantId,
+      order_number: `IT-${suffix}-2`, order_type: 'DELIVERY', table_id: null,
+      customer_name: 'Client livraison', customer_phone: '+22500000003',
+      delivery_address: 'Abidjan', delivery_zone: 'Cocody', delivery_fee_xof: 500,
+      scheduled_slot: '', status: 'PENDING', subtotal_xof: 2500, discount_xof: 0,
+      tax_xof: 0, total_xof: 3000, paid_xof: 0, notes: '',
+      created_at: now, updated_at: now,
+    });
+
+    const qrContext = await knexPublicRepository.findQrContextByToken(qrToken);
+    assert.equal(qrContext?.restaurant_id, restaurantId);
+    assert.equal(qrContext?.table_id, tableId);
+
+    const storefront = await knexPublicRepository.findStorefrontBySlug(slug);
+    assert.equal(storefront?.id, restaurantId);
+
+    const categories = await knexPublicRepository.findActiveCategories(restaurantId);
+    assert.equal(categories.length, 2);
+    const items = await knexPublicRepository.findAvailableMenuItems(restaurantId);
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.id, menuItemId);
+
+    const item = await knexPublicRepository.findMenuItemWithStation(menuItemId, restaurantId);
+    assert.equal(item?.station, 'KITCHEN');
+    assert.equal(Number(item?.category_active), 1);
+
+    const qrSessionId = await knexPublicRepository.createQrTableSession({
+      restaurantId, tableId, qrToken, expiresAt: future,
+    });
+    assert.equal((await knexPublicRepository.findQrTableSession(qrSessionId))?.table_id, tableId);
+
+    const trackedQr = await knexPublicRepository.findTrackedQrOrder(qrToken, orderId);
+    assert.equal(trackedQr?.order.id, orderId);
+    assert.equal(trackedQr?.items.length, 1);
+    const trackedStorefront = await knexPublicRepository.findTrackedStorefrontOrder(slug, storefrontOrderId);
+    assert.equal(trackedStorefront?.order.id, storefrontOrderId);
+
+    assert.equal(await knexPublicRepository.countOrdersForRestaurant(restaurantId), 2);
+    assert.equal((await knexPublicRepository.findOrderByIdempotencyKey(restaurantId, `it-${suffix}`))?.id, orderId);
+    assert.equal((await knexPublicRepository.findPublicRatingStats(restaurantId)).total, 0);
+
+    const leadId = await knexPublicRepository.createLead({
+      leadType: 'CONTACT', fullName: 'Test Lead', email,
+      phone: '+22500000004', restaurantName: 'Test', city: 'Abidjan',
+      message: 'Integration test lead',
+    });
+    assert.ok(await db('contact_leads').where({ id: leadId }).first());
+  } finally {
+    await db('contact_leads').where({ email }).del();
+    await db('qr_table_sessions').where({ restaurant_id: restaurantId }).del();
+    await db('order_items').whereIn('order_id', [orderId, storefrontOrderId]).del();
+    await db('orders').where({ restaurant_id: restaurantId }).del();
+    await db('menu_items').where({ id: menuItemId }).del();
+    await db('restaurant_members').where({ restaurant_id: restaurantId }).del();
+    await db('subscriptions').where({ restaurant_id: restaurantId }).del();
+    await db('qr_codes').where({ restaurant_id: restaurantId }).del();
+    await db('dining_tables').where({ restaurant_id: restaurantId }).del();
+    await db('menu_categories').where({ restaurant_id: restaurantId }).del();
+    await db('sessions').where({ user_id: userId }).del();
     await db('users').where({ id: userId }).del();
     await db('restaurants').where({ id: restaurantId }).del();
     await db('tenants').where({ id: restaurantId }).del();

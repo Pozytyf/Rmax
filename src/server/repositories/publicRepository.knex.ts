@@ -2,8 +2,6 @@ import crypto from 'node:crypto';
 import type { Knex } from 'knex';
 import { getKnex } from '../knex.ts';
 
-type Executor = Knex | Knex.Transaction;
-
 export class KnexPublicRepository {
   constructor(private readonly db: Knex = getKnex()) {}
 
