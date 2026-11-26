@@ -373,6 +373,33 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
       created_at: now,
     });
 
+    const orderId = `it_order_${suffix}`;
+    const diningTable = await db('dining_tables').where({ restaurant_id: restaurantId }).first();
+    await db('orders').insert({
+      id: orderId, restaurant_id: restaurantId, order_number: `IT-${suffix.slice(0, 6)}`,
+      order_type: 'DINE_IN', table_id: diningTable.id,
+      customer_name: 'Client integration', status: 'PENDING',
+      subtotal_xof: 3200, discount_xof: 0, tax_xof: 0, total_xof: 3200,
+      paid_xof: 0, notes: '', created_by_user_id: userId,
+      created_at: now, updated_at: now,
+    });
+    await db('order_items').insert({
+      id: `it_order_item_${suffix}`, order_id: orderId,
+      menu_item_id: menuItemId, name: 'Plat PostgreSQL', station: 'KITCHEN',
+      unit_price_xof: 3200, options_summary: '', options_delta_xof: 0,
+      quantity: 1, line_total_xof: 3200, notes: '', prep_status: 'PENDING',
+    });
+    const orderList = await knexRestaurantStockRepository.findOrdersWithItems(restaurantId);
+    assert.equal(orderList.find((row) => row.id === orderId)?.items.length, 1);
+    await db.transaction(async (trx) => {
+      const order = await knexRestaurantStockRepository.findOrderForUpdate(orderId, restaurantId, trx);
+      assert.equal(order?.status, 'PENDING');
+      assert.equal(await knexRestaurantStockRepository.updateOrderAndPrepStatus(
+        trx, orderId, restaurantId, 'IN_PREPARATION', String(order?.table_id),
+      ), 1);
+    });
+    assert.equal(String((await db('order_items').where({ order_id: orderId }).first())?.prep_status), 'PREPARING');
+
     const register = await db.transaction((trx) =>
       knexOperationsReadRepository.openRegisterSession(trx, {
         rid: restaurantId, userId, userName: 'Menu Test Owner',
@@ -647,6 +674,8 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     await db('purchase_orders').where({ restaurant_id: restaurantId }).del();
     await db('notifications').where({ restaurant_id: restaurantId }).del();
     await db('stock_alert_settings').where({ restaurant_id: restaurantId }).del();
+    await db('order_items').whereIn('order_id', db('orders').select('id').where({ restaurant_id: restaurantId })).del();
+    await db('orders').where({ restaurant_id: restaurantId }).del();
     await db('b2b_invoices').where({ restaurant_id: restaurantId }).del();
     await db('staff_time_clocks').where({ restaurant_id: restaurantId }).del();
     await db('inventory_count_lines').whereIn('inventory_count_id', db('inventory_counts').select('id').where({ restaurant_id: restaurantId })).del();
