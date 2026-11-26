@@ -35,23 +35,24 @@ export interface PaydunyaConfirmResult {
   completed: boolean;
   status: 'completed' | 'pending' | 'cancelled' | 'failed';
   receiptUrl?: string;
+  amountXof?: number;
+  currency?: string;
   providerMessage?: string;
 }
 
 function readPlatformPaydunyaSettings(): Record<string, string> {
-  try {
-    const db = getDb();
-    const rows = db
-      .prepare(
-        "SELECT key, value FROM platform_settings WHERE key LIKE 'paydunya_%'",
-      )
-      .all() as Array<{ key: string; value: string }>;
-    const map: Record<string, string> = {};
-    for (const r of rows) map[r.key] = r.value;
-    return map;
-  } catch {
-    return {};
-  }
+  // Production credentials must come from the deployment secret store.
+  // Do not read a local/ephemeral SQLite settings table in serverless runtime.
+  if (process.env.NODE_ENV === 'production') return {};
+  const db = getDb();
+  const rows = db
+    .prepare(
+      "SELECT key, value FROM platform_settings WHERE key LIKE 'paydunya_%'",
+    )
+    .all() as Array<{ key: string; value: string }>;
+  const map: Record<string, string> = {};
+  for (const r of rows) map[r.key] = r.value;
+  return map;
 }
 
 export function resolvePaydunyaPlatformCredentials(): PaydunyaPlatformCredentials {
@@ -106,8 +107,14 @@ export async function createPaydunyaSubscriptionCheckout(
   input: PaydunyaInvoiceInitInput,
 ): Promise<PaydunyaInvoiceInitResult> {
   const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    throw new Error('PAYDUNYA_MODE=LIVE est obligatoire pour encaisser un abonnement en production.');
+  }
 
   if (!creds.configured) {
+    if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
+      throw new Error('Configuration PayDunya absente : les paiements réels sont désactivés tant que les clés de production ne sont pas configurées.');
+    }
     const simToken = `pdx_sim_${crypto.randomBytes(10).toString('hex')}`;
     return {
       providerMode: 'SANDBOX_SIMULATION',
@@ -186,6 +193,108 @@ export async function createPaydunyaSubscriptionCheckout(
   }
 }
 
+export interface PaydunyaOrderCheckoutInput {
+  paymentId: string;
+  orderId: string;
+  orderNumber: string;
+  restaurantId: string;
+  restaurantName: string;
+  amountXof: number;
+  paymentMethod: string;
+  baseUrl: string;
+  returnUrl: string;
+  cancelUrl: string;
+}
+
+export async function createPaydunyaOrderCheckout(
+  input: PaydunyaOrderCheckoutInput,
+): Promise<PaydunyaInvoiceInitResult> {
+  const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    return {
+      completed: false,
+      status: 'failed',
+      providerMessage: 'Le mode PayDunya LIVE est obligatoire en production.',
+    };
+  }
+  if (!creds.configured) {
+    if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
+      throw new Error('Configuration PayDunya absente : les paiements réels sont désactivés.');
+    }
+    return {
+      providerMode: 'SANDBOX_SIMULATION',
+      mode: 'TEST',
+      paydunyaToken: `pdx_sim_${crypto.randomBytes(10).toString('hex')}`,
+      checkoutUrl: null,
+      simulated: true,
+    };
+  }
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    throw new Error('PAYDUNYA_MODE=LIVE est obligatoire pour accepter un paiement en production.');
+  }
+  const base = new URL(input.baseUrl);
+  if (base.protocol !== 'https:') {
+    throw new Error('APP_URL doit être une URL HTTPS pour le paiement PayDunya.');
+  }
+  const cleanBase = base.toString().replace(/\\/+$/, '');
+  const endpoint = `${getPaydunyaApiBase(creds.mode)}/checkout-invoice/create`;
+  const payload = {
+    invoice: {
+      total_amount: Math.round(input.amountXof),
+      description: `Commande ${input.orderNumber} · ${input.restaurantName} · Resto'MAX`,
+    },
+    store: {
+      name: input.restaurantName,
+      tagline: 'Commande en ligne',
+      website_url: cleanBase,
+    },
+    custom_data: {
+      payment_type: 'ORDER',
+      payment_id: input.paymentId,
+      order_id: input.orderId,
+      order_number: input.orderNumber,
+      restaurant_id: input.restaurantId,
+      payment_method: input.paymentMethod,
+      amount_xof: String(Math.round(input.amountXof)),
+      currency: 'XOF',
+    },
+    actions: {
+      callback_url: `${cleanBase}/api/public/webhooks/paydunya`,
+      return_url: input.returnUrl,
+      cancel_url: input.cancelUrl,
+    },
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: buildHeaders(creds),
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      response_code?: string; response_text?: string; token?: string; description?: string;
+    };
+    const checkoutUrl = String(data.response_text || '');
+    if (
+      !response.ok || data.response_code !== '00' ||
+      !data.token || !checkoutUrl.startsWith('https://')
+    ) {
+      throw new Error(data.description || data.response_text || 'PayDunya a refusé la création du paiement.');
+    }
+    return {
+      providerMode: 'PAYDUNYA_API',
+      mode: creds.mode,
+      paydunyaToken: String(data.token),
+      checkoutUrl,
+      simulated: false,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function confirmPaydunyaInvoice(
   paydunyaToken: string,
 ): Promise<PaydunyaConfirmResult> {
@@ -199,10 +308,24 @@ export async function confirmPaydunyaInvoice(
   }
 
   if (cleanToken.startsWith('pdx_sim_')) {
+    if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
+      return {
+        completed: false,
+        status: 'failed',
+        providerMessage: 'Un jeton de simulation ne peut jamais confirmer un paiement en production.',
+      };
+    }
     return { completed: true, status: 'completed' };
   }
 
   const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    return {
+      completed: false,
+      status: 'failed',
+      providerMessage: 'Le mode PayDunya LIVE est obligatoire en production.',
+    };
+  }
   if (!creds.configured) {
     return {
       completed: false,
@@ -225,14 +348,22 @@ export async function confirmPaydunyaInvoice(
       status?: string;
       receipt_url?: string;
       response_text?: string;
+      invoice?: { total_amount?: number | string; currency?: string };
+      total_amount?: number | string;
+      currency?: string;
     };
     const st = String(data.status || '').toLowerCase();
+    const amountRaw = data.invoice?.total_amount ?? data.total_amount;
+    const amountXof = amountRaw === undefined ? undefined : Number(amountRaw);
+    const currency = String(data.invoice?.currency || data.currency || '').toUpperCase() || undefined;
     if (resp.ok && data.response_code === '00' && st === 'completed') {
       return {
         completed: true,
         status: 'completed',
         receiptUrl:
           typeof data.receipt_url === 'string' ? data.receipt_url : undefined,
+        amountXof: Number.isFinite(amountXof) ? amountXof : undefined,
+        currency,
       };
     }
     if (st === 'cancelled' || st === 'canceled') {
@@ -262,6 +393,7 @@ export function verifyPaydunyaIpnSignature(
   rawHeaderSig?: string,
 ): boolean {
   const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') return false;
   const dataObj =
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)

@@ -25,7 +25,7 @@ test('1. Supabase DB URL detection & automatic SSL config in Knex', () => {
   assert.equal(cfg.client, 'pg');
   assert.deepEqual(
     (cfg.connection as { ssl: unknown }).ssl,
-    { rejectUnauthorized: false },
+    { rejectUnauthorized: true },
   );
 });
 
@@ -100,6 +100,17 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
     'ticket_messages',
     'audit_logs',
     'contact_leads',
+    'menu_combos',
+    'promotions',
+    'cash_register_sessions',
+    'table_calls',
+    'loyalty_transactions',
+    'customer_reviews',
+    'inventory_counts',
+    'inventory_count_lines',
+    'staff_shifts',
+    'staff_time_clocks',
+    'b2b_invoices',
   ];
 
   for (const tbl of requiredTables) {
@@ -114,6 +125,12 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(schemaSql.includes('public.current_tenant_id()'), true);
   assert.equal(schemaSql.includes('supabase_realtime'), true);
   assert.equal(schemaSql.includes('trg_restaurants_sync_tenant'), true);
+  assert.equal(schemaSql.includes('tenant_isolation_inventory_count_lines'), true);
+  assert.equal(schemaSql.includes('ALTER TABLE public.inventory_count_lines ENABLE ROW LEVEL SECURITY'), true);
+  assert.equal(schemaSql.includes('SET search_path = pg_catalog'), true);
+  assert.equal(schemaSql.includes('tenant_self_access_restaurants'), true);
+  assert.equal(schemaSql.includes('tenant_isolation_order_items'), true);
+  assert.equal(schemaSql.includes('REVOKE ALL ON TABLE public.users FROM anon, authenticated'), true);
 
   const coreMigrationPath = path.resolve(
     process.cwd(),
@@ -143,6 +160,75 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(coreMigrationSql.includes("'OWNER'"), true);
   assert.equal(coreMigrationSql.includes('tenant_isolation_order_items'), true);
 
+  const operationsMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260011_add_operations_schema_and_rls.sql',
+  );
+  assert.equal(fs.existsSync(operationsMigrationPath), true);
+  const operationsMigrationSql = fs.readFileSync(operationsMigrationPath, 'utf8');
+  for (const tbl of [
+    'menu_combos',
+    'promotions',
+    'cash_register_sessions',
+    'table_calls',
+    'loyalty_transactions',
+    'customer_reviews',
+    'inventory_counts',
+    'inventory_count_lines',
+    'staff_shifts',
+    'staff_time_clocks',
+    'b2b_invoices',
+  ]) {
+    assert.equal(
+      operationsMigrationSql.includes(`CREATE TABLE IF NOT EXISTS public.${tbl}`),
+      true,
+      `Missing operations table ${tbl} in Supabase migration`,
+    );
+  }
+  assert.equal(operationsMigrationSql.includes('tenant_isolation_inventory_count_lines'), true);
+  assert.equal(operationsMigrationSql.includes('uq_orders_restaurant_order_number'), true);
+
+  const revokeMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260010_revoke_public_rls_trigger_execute.sql',
+  );
+  assert.equal(fs.existsSync(revokeMigrationPath), true);
+  const revokeMigrationSql = fs.readFileSync(revokeMigrationPath, 'utf8');
+  assert.equal(revokeMigrationSql.includes('REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM PUBLIC'), true);
+
+  const tenantRlsMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260013_apply_existing_tenant_rls.sql',
+  );
+  assert.equal(fs.existsSync(tenantRlsMigrationPath), true);
+  const tenantRlsMigrationSql = fs.readFileSync(tenantRlsMigrationPath, 'utf8');
+  assert.equal(tenantRlsMigrationSql.includes('tenant_isolation_order_items'), true);
+  assert.equal(tenantRlsMigrationSql.includes('REVOKE ALL ON TABLE public.users FROM anon, authenticated'), true);
+  assert.equal(tenantRlsMigrationSql.includes("'orders'"), true);
+  assert.equal(tenantRlsMigrationSql.includes('restaurant_id = public.current_tenant_id()'), true);
+
+  const denyInternalMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260014_deny_api_access_to_internal_tables.sql',
+  );
+  assert.equal(fs.existsSync(denyInternalMigrationPath), true);
+  const denyInternalMigrationSql = fs.readFileSync(denyInternalMigrationPath, 'utf8');
+  assert.equal(denyInternalMigrationSql.includes('USING (FALSE) WITH CHECK (FALSE)'), true);
+  const operationalIndexesPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260015_index_operational_foreign_keys.sql',
+  );
+  assert.equal(fs.existsSync(operationalIndexesPath), true);
+  const operationalIndexesSql = fs.readFileSync(operationalIndexesPath, 'utf8');
+  assert.equal(operationalIndexesSql.includes('idx_cash_register_opened_by'), true);
+  assert.equal(operationalIndexesSql.includes('idx_loyalty_transactions_order_fk'), true);
+  assert.equal(operationalIndexesSql.includes('idx_table_calls_table_fk'), true);
+  assert.equal(schemaSql.includes('deny_api_access_%I'), true);
+  assert.equal(schemaSql.includes("'users'"), true);
+  assert.equal(schemaSql.includes("'sessions'"), true);
+  assert.equal(schemaSql.includes("'auth_tokens'"), true);
+  assert.equal(schemaSql.includes('USING (FALSE) WITH CHECK (FALSE)'), true);
+
   const seedSql = fs.readFileSync(seedPath, 'utf8');
   assert.equal(seedSql.includes('rest_sillage_01'), true);
   assert.equal(seedSql.includes('proprietaire@lesillage.ci'), true);
@@ -166,6 +252,21 @@ test('4. Full Knex migration 0004 runs cleanly and Vercel config + api/index.ts 
     assert.equal(await k.schema.hasTable('menu_item_recipes'), true);
     assert.equal(await k.schema.hasTable('stock_alert_settings'), true);
     assert.equal(await k.schema.hasTable('audit_logs'), true);
+    for (const table of [
+      'menu_combos',
+      'promotions',
+      'cash_register_sessions',
+      'table_calls',
+      'loyalty_transactions',
+      'customer_reviews',
+      'inventory_counts',
+      'inventory_count_lines',
+      'staff_shifts',
+      'staff_time_clocks',
+      'b2b_invoices',
+    ]) {
+      assert.equal(await k.schema.hasTable(table), true, `Missing operations table ${table}`);
+    }
   } finally {
     await k.destroy();
   }

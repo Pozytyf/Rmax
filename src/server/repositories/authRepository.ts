@@ -84,9 +84,9 @@ export class AuthRepository extends BaseRepository {
 
   switchSessionRestaurant(sessionId: string, userId: string, restaurantId: string) {
     const db = getDb();
-    db.prepare(
+    return db.prepare(
       'UPDATE sessions SET restaurant_id = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL',
-    ).run(restaurantId, sessionId, userId);
+    ).run(restaurantId, sessionId, userId).changes;
   }
 
   findMemberForPinLogin(restaurantId: string, userId: string) {
@@ -370,10 +370,10 @@ export class AuthRepository extends BaseRepository {
 
   markAuthTokenUsed(id: string) {
     const db = getDb();
-    db.prepare('UPDATE auth_tokens SET used_at = ? WHERE id = ?').run(
+    return db.prepare('UPDATE auth_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL').run(
       new Date().toISOString(),
       id,
-    );
+    ).changes;
   }
 
   invalidateUnusedAuthTokens(

@@ -40,6 +40,8 @@ import {
   sanitizeOptionGroups,
 } from './pricingEngine.ts';
 import { operationsRepository } from '../repositories/operationsRepository.ts';
+import { knexRestaurantStockRepository } from '../repositories/restaurantRepository.knex.ts';
+import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
 import type { Permission, PrinterSettings, Role } from '../../types/index.ts';
 
 const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
@@ -69,6 +71,10 @@ function parsePrinterSettings(raw: unknown): PrinterSettings {
   } catch {
     return { ...DEFAULT_PRINTER_SETTINGS };
   }
+}
+
+function usesPostgresRepositories(): boolean {
+  return ['pg', 'postgres', 'postgresql'].includes((process.env.DATABASE_CLIENT || '').toLowerCase());
 }
 
 export class RestaurantService extends BaseService<RestaurantRepository> {
@@ -113,12 +119,23 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     };
   }
 
-  getMenu(rid: string) {
-    const categories = restaurantRepository.findMenuCategories(rid);
-    const itemsRaw = restaurantRepository.findMenuItems(rid);
-    const recipes = restaurantRepository.findMenuRecipes(rid);
-    const promos = loadActivePromotions(getDb(), rid);
-    const combos = operationsRepository.findCombos(rid, false);
+  async getMenu(rid: string) {
+    const usePostgres = usesPostgresRepositories();
+    const [categories, itemsRaw, recipes, promos, combos] = usePostgres
+      ? await Promise.all([
+          knexRestaurantStockRepository.findMenuCategories(rid),
+          knexRestaurantStockRepository.findMenuItems(rid),
+          knexRestaurantStockRepository.findMenuRecipes(rid),
+          knexOperationsReadRepository.findPromotions(rid).then((rows) => rows.filter((promo) => promo.active)),
+          knexOperationsReadRepository.findCombos(rid, false),
+        ])
+      : [
+          restaurantRepository.findMenuCategories(rid),
+          restaurantRepository.findMenuItems(rid),
+          restaurantRepository.findMenuRecipes(rid),
+          loadActivePromotions(getDb(), rid),
+          operationsRepository.findCombos(rid, false),
+        ];
     const recipesByItem = new Map<string, typeof recipes>();
     for (const r of recipes) {
       const list = recipesByItem.get(r.menuItemId) || [];

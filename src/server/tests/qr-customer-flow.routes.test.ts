@@ -319,19 +319,37 @@ describe('Customer QR journey (/api/public/qr & end-to-end table-menu-order-trac
 
     const receivedEvents: Array<{ type: string; payload?: { status?: string } }> = [];
     const ws = new WebSocket(
-      `ws://127.0.0.1:${port}/ws?room=${encodeURIComponent(`order:${placedOrderId}`)}`,
+      `ws://127.0.0.1:${port}/ws?room=${encodeURIComponent(`order:${placedOrderId}`)}&qrToken=${encodeURIComponent(createdQrToken)}`,
     );
+    let roomReady = false;
+    let resolveRoomReady!: () => void;
+    let rejectRoomReady!: (error: Error) => void;
+    const roomReadyPromise = new Promise<void>((resolve, reject) => {
+      resolveRoomReady = resolve;
+      rejectRoomReady = reject;
+    });
+    ws.on('message', (raw) => {
+      try {
+        const message = JSON.parse(String(raw));
+        receivedEvents.push(message);
+        if (message.type === 'connection:ready' && !roomReady) {
+          roomReady = true;
+          resolveRoomReady();
+        }
+      } catch {
+        // Ignore malformed WebSocket frames in the test client.
+      }
+    });
     await new Promise<void>((resolve, reject) => {
       ws.on('open', () => resolve());
       ws.on('error', (err) => reject(err));
     });
-    ws.on('message', (raw) => {
-      try {
-        receivedEvents.push(JSON.parse(String(raw)));
-      } catch {
-        // ignore
-      }
-    });
+    if (!roomReady) {
+      ws.once('close', (code, reason) => {
+        if (!roomReady) rejectRoomReady(new Error(`WebSocket closed before room authorization: ${code} ${reason.toString()}`));
+      });
+      await roomReadyPromise;
+    }
 
     try {
       // Kitchen updates order status -> IN_PREPARATION -> READY -> SERVED

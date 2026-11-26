@@ -6,7 +6,21 @@ import bcrypt from 'bcryptjs';
 
 let singletonDb: SqliteDatabase | null = null;
 
+function assertSqliteRuntimeAllowed(): void {
+  const client = (process.env.DATABASE_CLIENT || '').toLowerCase();
+  const postgresRequested = ['pg', 'postgres', 'postgresql'].includes(client);
+  const productionRuntime = process.env.NODE_ENV === 'production';
+
+  if (postgresRequested || productionRuntime) {
+    throw new Error(
+      'Accès SQLite refusé : cette instance est configurée pour PostgreSQL ou Vercel production. Les repositories métier doivent être migrés vers PostgreSQL avant activation de ce runtime.',
+    );
+  }
+}
+
 export function getDb(customPath?: string): SqliteDatabase {
+  assertSqliteRuntimeAllowed();
+
   if (singletonDb && !customPath) {
     return singletonDb;
   }
@@ -121,6 +135,13 @@ function runMigrations(db: SqliteDatabase): void {
       paydunya_public_key TEXT NOT NULL DEFAULT '',
       paydunya_private_key TEXT NOT NULL DEFAULT '',
       paydunya_token TEXT NOT NULL DEFAULT '',
+      loyalty_enabled INTEGER NOT NULL DEFAULT 1,
+      loyalty_points_per_1000_xof INTEGER NOT NULL DEFAULT 10,
+      loyalty_xof_per_point INTEGER NOT NULL DEFAULT 25,
+      storefront_enabled INTEGER NOT NULL DEFAULT 1,
+      delivery_enabled INTEGER NOT NULL DEFAULT 1,
+      delivery_zones_json TEXT NOT NULL DEFAULT '[]',
+      pickup_slots_json TEXT NOT NULL DEFAULT '[]',
       whatsapp_enabled INTEGER NOT NULL DEFAULT 0,
       whatsapp_phone_number_id TEXT NOT NULL DEFAULT '',
       whatsapp_access_token TEXT NOT NULL DEFAULT '',
@@ -199,7 +220,7 @@ function runMigrations(db: SqliteDatabase): void {
       restaurant_id TEXT NOT NULL REFERENCES restaurants(id),
       subscription_id TEXT REFERENCES subscriptions(id),
       amount_xof INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'PAID',
+      status TEXT NOT NULL DEFAULT 'PENDING',
       payment_method TEXT NOT NULL,
       mode TEXT NOT NULL DEFAULT 'TEST',
       paid_at TEXT,
@@ -269,6 +290,14 @@ function runMigrations(db: SqliteDatabase): void {
       order_type TEXT NOT NULL,
       table_id TEXT REFERENCES dining_tables(id),
       customer_name TEXT NOT NULL DEFAULT 'Client comptoir',
+      customer_phone TEXT,
+      delivery_address TEXT,
+      delivery_zone TEXT,
+      delivery_fee_xof INTEGER NOT NULL DEFAULT 0,
+      scheduled_slot TEXT,
+      promo_code TEXT,
+      loyalty_points_used INTEGER NOT NULL DEFAULT 0,
+      loyalty_points_earned INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'PENDING',
       subtotal_xof INTEGER NOT NULL,
       discount_xof INTEGER NOT NULL DEFAULT 0,
@@ -1025,6 +1054,44 @@ function runMigrations(db: SqliteDatabase): void {
       throw err;
     } finally {
       db.exec('PRAGMA foreign_keys = ON;');
+    }
+  }
+
+  // Additive compatibility migration for existing local SQLite databases.
+  const existingRestaurantColumns = new Set(
+    (db.pragma('table_info(restaurants)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  const missingRestaurantColumns: Array<[string, string]> = [
+    ['loyalty_enabled', 'INTEGER NOT NULL DEFAULT 1'],
+    ['loyalty_points_per_1000_xof', 'INTEGER NOT NULL DEFAULT 10'],
+    ['loyalty_xof_per_point', 'INTEGER NOT NULL DEFAULT 25'],
+    ['storefront_enabled', 'INTEGER NOT NULL DEFAULT 1'],
+    ['delivery_enabled', 'INTEGER NOT NULL DEFAULT 1'],
+    ['delivery_zones_json', "TEXT NOT NULL DEFAULT '[]'"],
+    ['pickup_slots_json', "TEXT NOT NULL DEFAULT '[]'"],
+  ];
+  for (const [column, definition] of missingRestaurantColumns) {
+    if (!existingRestaurantColumns.has(column)) {
+      db.exec(`ALTER TABLE restaurants ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
+  const existingOrderColumns = new Set(
+    (db.pragma('table_info(orders)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  const missingOrderColumns: Array<[string, string]> = [
+    ['customer_phone', 'TEXT'],
+    ['delivery_address', 'TEXT'],
+    ['delivery_zone', 'TEXT'],
+    ['delivery_fee_xof', 'INTEGER NOT NULL DEFAULT 0'],
+    ['scheduled_slot', 'TEXT'],
+    ['promo_code', 'TEXT'],
+    ['loyalty_points_used', 'INTEGER NOT NULL DEFAULT 0'],
+    ['loyalty_points_earned', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [column, definition] of missingOrderColumns) {
+    if (!existingOrderColumns.has(column)) {
+      db.exec(`ALTER TABLE orders ADD COLUMN ${column} ${definition}`);
     }
   }
 

@@ -30,6 +30,28 @@ export async function runKnexMigrations(instance: Knex = getKnex()) {
 }
 
 /**
+ * Vérifie l'état du schéma sans modifier la base. Les migrations sont exécutées
+ * par une étape de déploiement contrôlée, jamais au démarrage de chaque instance.
+ */
+export async function assertKnexMigrationsCurrent(
+  instance: Knex = getKnex(),
+): Promise<void> {
+  const [, pending] = await instance.migrate.list();
+  if (pending.length > 0) {
+    const names = pending
+      .map((migration: unknown) =>
+        typeof migration === 'string'
+          ? migration
+          : String((migration as { name?: unknown }).name ?? 'migration inconnue'),
+      )
+      .join(', ');
+    throw new Error(
+      `Migrations PostgreSQL manquantes : ${names}. Exécutez le job de migration avant de démarrer l'application.`,
+    );
+  }
+}
+
+/**
  * Helper d'isolation multi-tenant pour Knex :
  * impose un `tenantId` valide et applique systématiquement le filtre sur la colonne tenant.
  */

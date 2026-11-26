@@ -1,6 +1,6 @@
 import QRCode from 'qrcode';
 import { getDb, generateId } from '../db.ts';
-import { recordAudit } from '../auth.ts';
+import { recordAudit, recordAuditWithKnex } from '../auth.ts';
 import {
   PublicRepository,
   publicRepository,
@@ -21,17 +21,33 @@ import {
   resolveLoyaltyForPhone,
 } from './pricingEngine.ts';
 import { broadcastOrderTrackerEvent, broadcastRestaurantEvent } from '../ws.ts';
-import { verifyPaydunyaIpnSignature } from './paydunyaService.ts';
+import { createPaydunyaOrderCheckout, confirmPaydunyaInvoice, verifyPaydunyaIpnSignature } from './paydunyaService.ts';
+import { knexPublicRepository } from '../repositories/publicRepository.knex.ts';
+import { getKnex } from '../knex.ts';
+import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
 import { BaseService } from './BaseService.ts';
+import { awardLoyaltyPointsOnPaidOrderKnex } from './pricingEngine.knex.ts';
 import { AppError } from './errors.ts';
+
+function isLegacyPublicTestRuntime(): boolean {
+  const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
+  return process.env.NODE_ENV === 'test' && !['pg', 'postgres', 'postgresql'].includes(client);
+}
+
+const publicReadRepository = (
+  isLegacyPublicTestRuntime() ? publicRepository : knexPublicRepository
+) as unknown as typeof publicRepository;
+const publicMutationRepository = (
+  isLegacyPublicTestRuntime() ? publicRepository : knexPublicRepository
+) as unknown as typeof publicRepository;
 
 export class PublicService extends BaseService<PublicRepository> {
   constructor(repo = publicRepository) {
     super(repo);
   }
 
-  getActivePlans() {
-    const rows = publicRepository.findActivePlans();
+  async getActivePlans() {
+    const rows = await publicReadRepository.findActivePlans();
     return rows.map((r) => ({
       id: r.id,
       code: r.code,
@@ -50,7 +66,7 @@ export class PublicService extends BaseService<PublicRepository> {
     }));
   }
 
-  getPlatformSettings(): Record<string, string> {
+  async getPlatformSettings(): Promise<Record<string, string>> {
     const allowedPublicKeys = new Set([
       'contact_email',
       'contact_phone',
@@ -60,7 +76,7 @@ export class PublicService extends BaseService<PublicRepository> {
       'maintenance_mode',
       'platform_announcement',
     ]);
-    const rows = publicRepository.findAllPlatformSettings();
+    const rows = await publicReadRepository.findAllPlatformSettings();
     const settings: Record<string, string> = {};
     for (const row of rows) {
       if (allowedPublicKeys.has(row.key)) {
@@ -70,7 +86,7 @@ export class PublicService extends BaseService<PublicRepository> {
     return settings;
   }
 
-  submitContactLead(body: Record<string, unknown>) {
+  async submitContactLead(body: Record<string, unknown>) {
     const { fullName, email, phone, restaurantName, city, message, website } =
       body || {};
     if (website) {
@@ -90,7 +106,7 @@ export class PublicService extends BaseService<PublicRepository> {
       );
     }
 
-    const id = publicRepository.createLead({
+    const id = await publicReadRepository.createLead({
       leadType: 'CONTACT',
       fullName: fullName.trim(),
       email: email.trim().toLowerCase(),
@@ -108,7 +124,7 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  submitDemoRequest(body: Record<string, unknown>) {
+  async submitDemoRequest(body: Record<string, unknown>) {
     const { fullName, email, phone, restaurantName, city, message, website } =
       body || {};
     if (website) {
@@ -128,7 +144,7 @@ export class PublicService extends BaseService<PublicRepository> {
       );
     }
 
-    const id = publicRepository.createLead({
+    const id = await publicReadRepository.createLead({
       leadType: 'DEMO_REQUEST',
       fullName: fullName.trim(),
       email: email.trim().toLowerCase(),
@@ -146,7 +162,7 @@ export class PublicService extends BaseService<PublicRepository> {
   }
 
   async generateQrSvg(token: string, baseUrl: string): Promise<string> {
-    const qrRow = publicRepository.findQrContextByToken(token);
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -167,11 +183,12 @@ export class PublicService extends BaseService<PublicRepository> {
     }
   }
 
-  private mapPublicCatalog(restaurantId: string) {
-    const db = getDb();
-    const categories = publicRepository.findActiveCategories(restaurantId);
-    const itemsRaw = publicRepository.findAvailableMenuItems(restaurantId);
-    const activePromos = loadActivePromotions(db, restaurantId);
+  private async mapPublicCatalog(restaurantId: string) {
+    const categories = await publicReadRepository.findActiveCategories(restaurantId);
+    const itemsRaw = await publicReadRepository.findAvailableMenuItems(restaurantId);
+    const activePromos = isLegacyPublicTestRuntime()
+      ? loadActivePromotions(getDb(), restaurantId)
+      : (await knexOperationsReadRepository.findPromotions(restaurantId)).filter((promo) => promo.active);
     const items = itemsRaw.map((it) => {
       const basePrice = Number(it.price_xof);
       const hh = computeHappyHourForItem({
@@ -193,7 +210,9 @@ export class PublicService extends BaseService<PublicRepository> {
         optionGroups: parseOptionGroups(it.option_groups_json),
       };
     });
-    const combos = operationsRepository.findCombos(restaurantId, true);
+    const combos = isLegacyPublicTestRuntime()
+      ? operationsRepository.findCombos(restaurantId, true)
+      : await knexOperationsReadRepository.findCombos(restaurantId, true);
     return { categories, items, combos };
   }
 
@@ -212,8 +231,8 @@ export class PublicService extends BaseService<PublicRepository> {
     }
   }
 
-  getQrMenuContext(token: string) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async getQrMenuContext(token: string) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -228,16 +247,16 @@ export class PublicService extends BaseService<PublicRepository> {
     const restaurantId = String(qrRow.restaurant_id);
     const tableId = String(qrRow.table_id);
     const expiresAt = new Date(Date.now() + 4 * 3600 * 1000).toISOString();
-    const sessionId = publicRepository.createQrTableSession({
+    const sessionId = await publicReadRepository.createQrTableSession({
       restaurantId,
       tableId,
       qrToken: token,
       expiresAt,
     });
 
-    const catalog = this.mapPublicCatalog(restaurantId);
-    const ratingSummary = publicRepository.findPublicRatingStats(restaurantId);
-    const waiters = publicRepository.findServiceWaiterNames(restaurantId);
+    const catalog = await this.mapPublicCatalog(restaurantId);
+    const ratingSummary = await publicReadRepository.findPublicRatingStats(restaurantId);
+    const waiters = await publicReadRepository.findServiceWaiterNames(restaurantId);
 
     return {
       sessionId,
@@ -266,8 +285,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  getStorefrontContext(slug: string) {
-    const resto = publicRepository.findStorefrontBySlug(slug);
+  async getStorefrontContext(slug: string) {
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Vitrine restaurant introuvable.');
     }
@@ -280,8 +299,8 @@ export class PublicService extends BaseService<PublicRepository> {
     }
 
     const restaurantId = String(resto.id);
-    const catalog = this.mapPublicCatalog(restaurantId);
-    const ratingSummary = publicRepository.findPublicRatingStats(restaurantId);
+    const catalog = await this.mapPublicCatalog(restaurantId);
+    const ratingSummary = await publicReadRepository.findPublicRatingStats(restaurantId);
 
     return {
       restaurant: {
@@ -309,41 +328,42 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  lookupPublicLoyaltyByQr(token: string, phone: string) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async lookupPublicLoyaltyByQr(token: string, phone: string) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow || qrRow.qr_status !== 'ACTIVE') {
       throw new AppError(404, 'QR code introuvable ou révoqué.');
     }
-    const info = resolveLoyaltyForPhone(
-      getDb(),
-      String(qrRow.restaurant_id),
-      phone,
-    );
+    const info = isLegacyPublicTestRuntime()
+      ? resolveLoyaltyForPhone(getDb(), String(qrRow.restaurant_id), phone)
+      : await knexPublicRepository.resolveLoyaltyForPhone(String(qrRow.restaurant_id), normalizePhoneKey(phone));
     if (!info) {
       throw new AppError(400, 'Numéro de téléphone invalide.');
     }
     return info;
   }
 
-  lookupPublicLoyaltyBySlug(slug: string, phone: string) {
-    const resto = publicRepository.findStorefrontBySlug(slug);
+  async lookupPublicLoyaltyBySlug(slug: string, phone: string) {
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Restaurant introuvable.');
     }
-    const info = resolveLoyaltyForPhone(getDb(), String(resto.id), phone);
+    const info = isLegacyPublicTestRuntime()
+      ? resolveLoyaltyForPhone(getDb(), String(resto.id), phone)
+      : await knexPublicRepository.resolveLoyaltyForPhone(String(resto.id), normalizePhoneKey(phone));
     if (!info) {
       throw new AppError(400, 'Numéro de téléphone invalide.');
     }
     return info;
   }
 
-  private buildPublicOrderLines(params: {
+  private async buildPublicOrderLines(params: {
     restaurantId: string;
     rawItems: unknown[];
     rawCombos: unknown[];
   }) {
-    const db = getDb();
-    const activePromos = loadActivePromotions(db, params.restaurantId);
+    const activePromos = isLegacyPublicTestRuntime()
+      ? loadActivePromotions(getDb(), params.restaurantId)
+      : (await knexOperationsReadRepository.findPromotions(params.restaurantId)).filter((promo) => promo.active);
     let grossXof = 0;
     const preparedLines: Array<{
       id: string;
@@ -382,7 +402,7 @@ export class PublicService extends BaseService<PublicRepository> {
         throw new AppError(400, 'Quantité d’article invalide.');
       }
       const qty = Math.max(1, Math.min(50, Math.floor(parsedQty)));
-      const menuItem = publicRepository.findMenuItemWithStation(
+      const menuItem = await publicReadRepository.findMenuItemWithStation(
         String(line.menuItemId),
         params.restaurantId,
       );
@@ -431,9 +451,9 @@ export class PublicService extends BaseService<PublicRepository> {
     }
 
     if (combosQueue.length > 0) {
-      const fallbackItem = db
-        .prepare('SELECT id FROM menu_items WHERE restaurant_id = ? LIMIT 1')
-        .get(params.restaurantId) as { id: string } | undefined;
+      const fallbackItem = isLegacyPublicTestRuntime()
+        ? getDb().prepare('SELECT id FROM menu_items WHERE restaurant_id = ? LIMIT 1').get(params.restaurantId) as { id: string } | undefined
+        : await getKnex()('menu_items').select('id').where({ restaurant_id: params.restaurantId }).first() as { id: string } | undefined;
 
       for (const rawCombo of combosQueue) {
         const cObj = (rawCombo || {}) as {
@@ -441,10 +461,9 @@ export class PublicService extends BaseService<PublicRepository> {
           quantity?: unknown;
           notes?: unknown;
         };
-        const combo = operationsRepository.findComboById(
-          String(cObj.comboId || ''),
-          params.restaurantId,
-        );
+        const combo = isLegacyPublicTestRuntime()
+          ? operationsRepository.findComboById(String(cObj.comboId || ''), params.restaurantId)
+          : await knexOperationsReadRepository.findComboById(String(cObj.comboId || ''), params.restaurantId);
         if (!combo || !combo.active) {
           throw new AppError(400, 'Une formule sélectionnée n’est plus disponible.');
         }
@@ -511,7 +530,7 @@ export class PublicService extends BaseService<PublicRepository> {
       throw new AppError(400, 'Votre panier est vide.');
     }
 
-    const qrRow = publicRepository.findQrContextByToken(token);
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow || qrRow.qr_status !== 'ACTIVE') {
       throw new AppError(410, 'QR code révoqué ou invalide.');
     }
@@ -536,7 +555,7 @@ export class PublicService extends BaseService<PublicRepository> {
     }
 
     if (idempotencyKey) {
-      const existing = publicRepository.findOrderByIdempotencyKey(
+      const existing = await publicReadRepository.findOrderByIdempotencyKey(
         restaurantId,
         String(idempotencyKey),
       );
@@ -556,7 +575,7 @@ export class PublicService extends BaseService<PublicRepository> {
     const db = getDb();
     const now = new Date().toISOString();
     const orderId = generateId('ord');
-    const orderCount = publicRepository.countOrdersForRestaurant(restaurantId);
+    const orderCount = await publicReadRepository.countOrdersForRestaurant(restaurantId);
     const orderNumber = `CMD-${1001 + orderCount}`;
 
     let deductionResult: {
@@ -589,7 +608,7 @@ export class PublicService extends BaseService<PublicRepository> {
       db.exec('BEGIN IMMEDIATE');
 
       const { grossXof, preparedLines, recipeDeductItems } =
-        this.buildPublicOrderLines({
+        await this.buildPublicOrderLines({
           restaurantId,
           rawItems,
           rawCombos,
@@ -735,7 +754,7 @@ export class PublicService extends BaseService<PublicRepository> {
       throw new AppError(400, 'Votre panier est vide.');
     }
 
-    const resto = publicRepository.findStorefrontBySlug(slug);
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Vitrine restaurant introuvable.');
     }
@@ -880,7 +899,7 @@ export class PublicService extends BaseService<PublicRepository> {
       db.exec('BEGIN IMMEDIATE');
 
       const { grossXof, preparedLines, recipeDeductItems } =
-        this.buildPublicOrderLines({
+        await this.buildPublicOrderLines({
           restaurantId,
           rawItems,
           rawCombos,
@@ -1055,8 +1074,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  trackQrOrder(token: string, orderId: string) {
-    const result = publicRepository.findTrackedQrOrder(token, orderId);
+  async trackQrOrder(token: string, orderId: string) {
+    const result = await publicReadRepository.findTrackedQrOrder(token, orderId);
     if (!result) {
       throw new AppError(404, 'Commande introuvable pour cette table.');
     }
@@ -1088,8 +1107,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  trackStorefrontOrder(slug: string, orderId: string) {
-    const result = publicRepository.findTrackedStorefrontOrder(slug, orderId);
+  async trackStorefrontOrder(slug: string, orderId: string) {
+    const result = await publicReadRepository.findTrackedStorefrontOrder(slug, orderId);
     if (!result) {
       throw new AppError(404, 'Commande introuvable.');
     }
@@ -1127,11 +1146,137 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  payQrOrder(
+  private async createPublicOrderPaymentIntent(params: {
+    order: {
+      id: string; restaurant_id: string; order_number: string;
+      total_xof: number | string; paid_xof: number | string;
+      customer_phone?: string | null; restaurant_name: string;
+      status: string; restaurant_status: string; deleted_at?: string | null;
+      qr_status?: string;
+    };
+    body: Record<string, unknown>;
+    channel: 'QR' | 'STOREFRONT';
+    returnPath: string;
+  }) {
+    const method = String(params.body.method || '').toUpperCase();
+    if (!['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'].includes(method)) {
+      throw new AppError(400, 'Moyen de paiement mobile ou carte invalide.');
+    }
+    const order = params.order;
+    if (order.deleted_at || order.restaurant_status === 'SUSPENDED' || order.restaurant_status === 'DELETED') {
+      throw new AppError(403, 'Restaurant indisponible.');
+    }
+    if (order.status === 'CANCELLED') throw new AppError(400, 'Cette commande a été annulée.');
+    if (params.channel === 'QR' && order.qr_status !== 'ACTIVE') {
+      throw new AppError(410, 'Ce QR code a été révoqué.');
+    }
+
+    const idempotencyKey = String(params.body.idempotencyKey || '').trim();
+    if (!idempotencyKey || idempotencyKey.length > 128) {
+      throw new AppError(400, 'Une clé d’idempotence valide est obligatoire pour le paiement.');
+    }
+    const existing = await knexPublicRepository.findQrPaymentByIdempotencyKey(
+      order.restaurant_id, idempotencyKey,
+    );
+    if (existing) return { payment: existing, deduplicated: true };
+
+    const remaining = Number(order.total_xof) - Number(order.paid_xof);
+    if (remaining <= 0) throw new AppError(409, 'Cette commande est déjà intégralement réglée.');
+    const requestedAmount = params.channel === 'STOREFRONT'
+      ? remaining
+      : params.body.amountXof
+        ? Math.round(Number(params.body.amountXof))
+        : remaining;
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > remaining) {
+      throw new AppError(400, 'Montant de règlement invalide ou supérieur au solde restant.');
+    }
+
+    const phoneClean = normalizePhoneKey(String(
+      params.body.phoneNumber || params.body.customerPhone || order.customer_phone || '',
+    )).slice(0, 20);
+    if (method !== 'CARD' && phoneClean.length < 6) {
+      throw new AppError(400, 'Veuillez saisir votre numéro Mobile Money pour valider le paiement.');
+    }
+    if (!order.customer_phone && phoneClean.length >= 6) {
+      await knexPublicRepository.updateOrderCustomerPhone(order.id, order.restaurant_id, phoneClean);
+    }
+
+    const paymentId = generateId('pay');
+    const now = new Date().toISOString();
+    const reference = `RMX-${paymentId}`;
+    await knexPublicRepository.insertPendingPublicOrderPayment({
+      paymentId, restaurantId: order.restaurant_id, orderId: order.id,
+      amountXof: requestedAmount, method, mode: 'LIVE',
+      reference, idempotencyKey, now,
+    });
+
+    const configuredBase = process.env.APP_URL || process.env.PUBLIC_APP_URL ||
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` :
+        process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
+    if (!configuredBase) {
+      await knexPublicRepository.markPendingPaymentFailed({
+        paymentId, restaurantId: order.restaurant_id,
+        reason: 'APP_URL/PUBLIC_APP_URL non configurée.', now: new Date().toISOString(),
+      });
+      throw new AppError(503, 'URL publique du site non configurée pour le paiement sécurisé.');
+    }
+
+    const baseUrl = configuredBase.replace(/\\/+$/, '');
+    const returnUrl = `${baseUrl}${params.returnPath}?payment=return`;
+    const cancelUrl = `${baseUrl}${params.returnPath}?payment=cancel`;
+    try {
+      const checkout = await createPaydunyaOrderCheckout({
+        paymentId, orderId: order.id, orderNumber: order.order_number,
+        restaurantId: order.restaurant_id, restaurantName: order.restaurant_name,
+        amountXof: requestedAmount, paymentMethod: method,
+        baseUrl, returnUrl, cancelUrl,
+      });
+      await knexPublicRepository.updatePaymentProviderDetails({
+        paymentId, restaurantId: order.restaurant_id,
+        providerReference: checkout.paydunyaToken,
+        checkoutUrl: checkout.checkoutUrl,
+        providerStatus: checkout.simulated ? 'SIMULATED' : 'CREATED',
+        payloadJson: JSON.stringify({
+          providerMode: checkout.providerMode, simulated: checkout.simulated,
+        }),
+        mode: checkout.mode,
+        now: new Date().toISOString(),
+      });
+      return {
+        deduplicated: false,
+        simulated: checkout.simulated,
+        checkoutUrl: checkout.checkoutUrl,
+        payment: {
+          id: paymentId, orderId: order.id, amountXof: requestedAmount,
+          method, mode: checkout.mode, reference,
+          provider: 'PAYDUNYA', providerReference: checkout.paydunyaToken,
+          checkoutUrl: checkout.checkoutUrl, status: 'PENDING', createdAt: now,
+        },
+      };
+    } catch (err) {
+      await knexPublicRepository.markPendingPaymentFailed({
+        paymentId, restaurantId: order.restaurant_id,
+        reason: err instanceof Error ? err.message : String(err),
+        now: new Date().toISOString(),
+      });
+      throw new AppError(502, err instanceof Error ? err.message : 'Impossible de créer le paiement PayDunya.');
+    }
+  }
+
+  async payQrOrder(
     token: string,
     orderId: string,
     body: Record<string, unknown>,
   ) {
+    if (!isLegacyPublicTestRuntime()) {
+      const order = await knexPublicRepository.findOrderForQrPayment(token, orderId);
+      if (!order) throw new AppError(404, 'Commande introuvable pour cette table.');
+      return this.createPublicOrderPaymentIntent({
+        order: order as Parameters<PublicService['createPublicOrderPaymentIntent']>[0]['order'],
+        body, channel: 'QR',
+        returnPath: `/q/${encodeURIComponent(token)}/suivi/${encodeURIComponent(orderId)}`,
+      });
+    }
     const method = String(body?.method || '').toUpperCase();
     const validMethods = ['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'];
     if (!validMethods.includes(method)) {
@@ -1286,11 +1431,20 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  payStorefrontOrder(
+  async payStorefrontOrder(
     slug: string,
     orderId: string,
     body: Record<string, unknown>,
   ) {
+    if (!isLegacyPublicTestRuntime()) {
+      const order = await knexPublicRepository.findOrderForStorefrontPayment(slug, orderId);
+      if (!order) throw new AppError(404, 'Commande en ligne introuvable.');
+      return this.createPublicOrderPaymentIntent({
+        order: order as Parameters<PublicService['createPublicOrderPaymentIntent']>[0]['order'],
+        body, channel: 'STOREFRONT',
+        returnPath: `/c/${encodeURIComponent(slug)}/suivi/${encodeURIComponent(orderId)}`,
+      });
+    }
     const method = String(body?.method || '').toUpperCase();
     const validMethods = ['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'];
     if (!validMethods.includes(method)) {
@@ -1417,8 +1571,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  callWaiterOrBill(token: string, body: Record<string, unknown>) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async callWaiterOrBill(token: string, body: Record<string, unknown>) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -1433,7 +1587,7 @@ export class PublicService extends BaseService<PublicRepository> {
     const tableId = String(qrRow.table_id);
     const tableLabel = String(qrRow.table_label);
 
-    const call = publicRepository.createTableCall({
+    const call = await publicMutationRepository.createTableCall({
       restaurantId,
       tableId,
       tableLabel,
@@ -1485,28 +1639,28 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  submitQrReview(token: string, orderId: string, body: Record<string, unknown>) {
-    const tracked = publicRepository.findTrackedQrOrder(token, orderId);
+  async submitQrReview(token: string, orderId: string, body: Record<string, unknown>) {
+    const tracked = await publicReadRepository.findTrackedQrOrder(token, orderId);
     if (!tracked) {
       throw new AppError(404, 'Commande introuvable pour cette table.');
     }
-    return this.createReviewForTrackedOrder(tracked, body);
+    return await this.createReviewForTrackedOrder(tracked, body);
   }
 
-  submitStorefrontReview(
+  async submitStorefrontReview(
     slug: string,
     orderId: string,
     body: Record<string, unknown>,
   ) {
-    const tracked = publicRepository.findTrackedStorefrontOrder(slug, orderId);
+    const tracked = await publicReadRepository.findTrackedStorefrontOrder(slug, orderId);
     if (!tracked) {
       throw new AppError(404, 'Commande introuvable.');
     }
-    return this.createReviewForTrackedOrder(tracked, body);
+    return await this.createReviewForTrackedOrder(tracked, body);
   }
 
-  submitQrServiceRating(token: string, body: Record<string, unknown>) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async submitQrServiceRating(token: string, body: Record<string, unknown>) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -1521,7 +1675,7 @@ export class PublicService extends BaseService<PublicRepository> {
       .slice(0, 80) || 'Client salle';
     const restaurantId = String(qrRow.restaurant_id);
 
-    const created = publicRepository.insertCustomerReview({
+    const created = await publicMutationRepository.insertCustomerReview({
       restaurantId,
       orderId: null,
       orderNumber: '',
@@ -1541,12 +1695,12 @@ export class PublicService extends BaseService<PublicRepository> {
     });
     return {
       review: created,
-      ratingSummary: publicRepository.findPublicRatingStats(restaurantId),
+      ratingSummary: await publicReadRepository.findPublicRatingStats(restaurantId),
     };
   }
 
-  submitStorefrontServiceRating(slug: string, body: Record<string, unknown>) {
-    const resto = publicRepository.findStorefrontBySlug(slug);
+  async submitStorefrontServiceRating(slug: string, body: Record<string, unknown>) {
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Vitrine restaurant introuvable.');
     }
@@ -1561,7 +1715,7 @@ export class PublicService extends BaseService<PublicRepository> {
       .slice(0, 80) || 'Client en ligne';
     const restaurantId = String(resto.id);
 
-    const created = publicRepository.insertCustomerReview({
+    const created = await publicMutationRepository.insertCustomerReview({
       restaurantId,
       orderId: null,
       orderNumber: '',
@@ -1581,11 +1735,11 @@ export class PublicService extends BaseService<PublicRepository> {
     });
     return {
       review: created,
-      ratingSummary: publicRepository.findPublicRatingStats(restaurantId),
+      ratingSummary: await publicReadRepository.findPublicRatingStats(restaurantId),
     };
   }
 
-  private createReviewForTrackedOrder(
+  private async createReviewForTrackedOrder(
     tracked: {
       order: Record<string, unknown>;
       review: Record<string, unknown> | null;
@@ -1614,11 +1768,8 @@ export class PublicService extends BaseService<PublicRepository> {
       .trim()
       .slice(0, 80);
 
-    // Fetch restaurant_id securely from orders row
-    const ordRow = getDb()
-      .prepare('SELECT restaurant_id FROM orders WHERE id = ?')
-      .get(String(order.id)) as { restaurant_id: string } | undefined;
-    if (!ordRow) {
+    const restaurantId = String(order.restaurant_id || order.restaurantId || '');
+    if (!restaurantId) {
       throw new AppError(404, 'Commande introuvable.');
     }
 
@@ -1628,8 +1779,8 @@ export class PublicService extends BaseService<PublicRepository> {
         ? 'STOREFRONT_ORDER'
         : 'QR_ORDER';
 
-    const created = publicRepository.insertCustomerReview({
-      restaurantId: ordRow.restaurant_id,
+    const created = await publicMutationRepository.insertCustomerReview({
+      restaurantId,
       orderId: String(order.id),
       orderNumber: String(order.order_number),
       tableLabel: String(order.table_label || orderType || ''),
@@ -1643,10 +1794,117 @@ export class PublicService extends BaseService<PublicRepository> {
       comment: parsed.comment,
     });
 
-    broadcastRestaurantEvent(ordRow.restaurant_id, 'review:created', {
+    broadcastRestaurantEvent(restaurantId, 'review:created', {
       review: created,
     });
     return { review: created };
+  }
+
+  async handlePaydunyaWebhook(body: Record<string, unknown>, signature?: string) {
+    const dataObj = body?.data && typeof body.data === 'object'
+      ? body.data as Record<string, unknown> : body;
+    const invoiceObj = dataObj?.invoice && typeof dataObj.invoice === 'object'
+      ? dataObj.invoice as Record<string, unknown> : {};
+    const customData = dataObj?.custom_data && typeof dataObj.custom_data === 'object'
+      ? dataObj.custom_data as Record<string, unknown>
+      : invoiceObj.custom_data && typeof invoiceObj.custom_data === 'object'
+        ? invoiceObj.custom_data as Record<string, unknown> : {};
+    if (String(customData.payment_type || '').toUpperCase() === 'ORDER') {
+      return this.handlePaydunyaOrderWebhook(body, signature);
+    }
+    return this.handlePaydunyaSubscriptionWebhook(body, signature);
+  }
+
+  private async handlePaydunyaOrderWebhook(body: Record<string, unknown>, signature?: string) {
+    if (!verifyPaydunyaIpnSignature(body, signature)) {
+      throw new AppError(401, 'Signature PayDunya invalide.');
+    }
+    const dataObj = body?.data && typeof body.data === 'object'
+      ? body.data as Record<string, unknown> : body;
+    const invoiceObj = dataObj?.invoice && typeof dataObj.invoice === 'object'
+      ? dataObj.invoice as Record<string, unknown> : {};
+    const customData = dataObj?.custom_data && typeof dataObj.custom_data === 'object'
+      ? dataObj.custom_data as Record<string, unknown>
+      : invoiceObj.custom_data && typeof invoiceObj.custom_data === 'object'
+        ? invoiceObj.custom_data as Record<string, unknown> : {};
+    const token = String(invoiceObj.token || dataObj.token || '').trim();
+    const paymentId = String(customData.payment_id || '').trim();
+    const orderId = String(customData.order_id || '').trim();
+    const restaurantId = String(customData.restaurant_id || '').trim();
+    const amountFromCustom = Number(customData.amount_xof || 0);
+    const currencyFromCustom = String(customData.currency || '').toUpperCase();
+    const status = String(dataObj.status || invoiceObj.status || '').toLowerCase();
+
+    if (!token || !paymentId || !orderId || !restaurantId) {
+      throw new AppError(400, 'Notification PayDunya incomplète : référence de paiement manquante.');
+    }
+    if (currencyFromCustom !== 'XOF') {
+      throw new AppError(400, 'Devise du paiement PayDunya invalide ou absente.');
+    }
+
+    const payment = await knexPublicRepository.findPaymentByProviderReference(token);
+    if (!payment || String(payment.id) !== paymentId ||
+        String(payment.order_id) !== orderId ||
+        String(payment.restaurant_id) !== restaurantId) {
+      throw new AppError(404, 'Paiement PayDunya introuvable ou non correspondant.');
+    }
+
+    if (status !== 'completed') {
+      if (['failed', 'cancelled', 'canceled', 'expired'].includes(status)) {
+        await knexPublicRepository.markPendingPaymentFailed({
+          paymentId, restaurantId, reason: `PayDunya status: ${status}`,
+          now: new Date().toISOString(),
+        });
+      }
+      return { ok: true, status: status || 'pending', paymentId };
+    }
+
+    const confirmation = await confirmPaydunyaInvoice(token);
+    if (!confirmation.completed || confirmation.amountXof === undefined ||
+        (confirmation.currency || currencyFromCustom) !== 'XOF' ||
+        confirmation.amountXof !== Number(payment.amount_xof) ||
+        amountFromCustom !== Number(payment.amount_xof)) {
+      throw new AppError(400, 'La confirmation PayDunya ne correspond pas au montant ou à la devise du paiement.');
+    }
+
+    const now = new Date().toISOString();
+    const settlement = await getKnex().transaction(async (trx) => {
+      const result = await knexPublicRepository.completePaydunyaOrderPayment(trx, {
+        paymentId, restaurantId, orderId, providerReference: token,
+        amountXof: confirmation.amountXof!, payloadJson: JSON.stringify(body), now,
+      });
+      let pointsEarned = 0;
+      if (!result.alreadyPaid && result.fullyPaid) {
+        pointsEarned = await awardLoyaltyPointsOnPaidOrderKnex(trx, restaurantId, orderId);
+      }
+      if (!result.alreadyPaid) {
+        await recordAuditWithKnex(trx, {
+          actorUserId: null, actorEmail: 'paydunya-webhook',
+          actorRole: 'SYSTEM', restaurantId, action: 'PAYMENT_CONFIRMED',
+          targetType: 'PAYMENT', targetId: paymentId,
+          details: JSON.stringify({
+            orderId, providerReference: token, amountXof: confirmation.amountXof,
+            currency: confirmation.currency, fullyPaid: result.fullyPaid,
+          }),
+        });
+      }
+      return { ...result, pointsEarned };
+    });
+
+    if (!settlement.alreadyPaid) {
+      broadcastRestaurantEvent(restaurantId, 'payment:updated', {
+        orderId, paymentId, status: 'PAID', amountXof: confirmation.amountXof,
+      });
+      broadcastRestaurantEvent(restaurantId, 'order:updated', {
+        orderId, paidXof: settlement.order?.paid_xof,
+        status: settlement.fullyPaid ? 'PAID' : 'PENDING',
+      });
+    }
+    return {
+      ok: true, paymentId, orderId, status: 'PAID',
+      alreadyPaid: settlement.alreadyPaid, fullyPaid: settlement.fullyPaid,
+      pointsEarned: settlement.pointsEarned,
+    };
   }
 
   handlePaydunyaSubscriptionWebhook(

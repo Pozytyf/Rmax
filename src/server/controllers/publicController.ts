@@ -3,27 +3,27 @@ import { publicService } from '../services/publicService.ts';
 import { handleControllerError } from '../services/errors.ts';
 
 export const publicController = {
-  getPlans(_req: Request, res: Response) {
+  async getPlans(_req: Request, res: Response) {
     try {
-      const plans = publicService.getActivePlans();
+      const plans = await publicService.getActivePlans();
       res.json({ plans });
     } catch (err) {
       handleControllerError(res, err, 'Erreur lors du chargement des offres.');
     }
   },
 
-  getSettings(_req: Request, res: Response) {
+  async getSettings(_req: Request, res: Response) {
     try {
-      const settings = publicService.getPlatformSettings();
+      const settings = await publicService.getPlatformSettings();
       res.json({ settings });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement paramètres.');
     }
   },
 
-  submitContact(req: Request, res: Response) {
+  async submitContact(req: Request, res: Response) {
     try {
-      const result = publicService.submitContactLead(req.body || {});
+      const result = await publicService.submitContactLead(req.body || {});
       if (result.honeypot) {
         res.status(200).json({ ok: true });
         return;
@@ -34,9 +34,9 @@ export const publicController = {
     }
   },
 
-  submitDemoRequest(req: Request, res: Response) {
+  async submitDemoRequest(req: Request, res: Response) {
     try {
-      const result = publicService.submitDemoRequest(req.body || {});
+      const result = await publicService.submitDemoRequest(req.body || {});
       if (result.honeypot) {
         res.status(200).json({ ok: true });
         return;
@@ -67,18 +67,18 @@ export const publicController = {
     }
   },
 
-  getQrMenuContext(req: Request, res: Response) {
+  async getQrMenuContext(req: Request, res: Response) {
     try {
-      const context = publicService.getQrMenuContext(String(req.params.token));
+      const context = await publicService.getQrMenuContext(String(req.params.token));
       res.json(context);
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement menu QR.');
     }
   },
 
-  lookupQrLoyalty(req: Request, res: Response) {
+  async lookupQrLoyalty(req: Request, res: Response) {
     try {
-      const info = publicService.lookupPublicLoyaltyByQr(
+      const info = await publicService.lookupPublicLoyaltyByQr(
         String(req.params.token),
         String(req.query.phone || ''),
       );
@@ -104,9 +104,9 @@ export const publicController = {
     }
   },
 
-  trackQrOrder(req: Request, res: Response) {
+  async trackQrOrder(req: Request, res: Response) {
     try {
-      const order = publicService.trackQrOrder(
+      const order = await publicService.trackQrOrder(
         String(req.params.token),
         String(req.params.orderId),
       );
@@ -116,9 +116,9 @@ export const publicController = {
     }
   },
 
-  payQrOrder(req: Request, res: Response) {
+  async payQrOrder(req: Request, res: Response) {
     try {
-      const result = publicService.payQrOrder(
+      const result = await publicService.payQrOrder(
         String(req.params.token),
         String(req.params.orderId),
         req.body || {},
@@ -129,9 +129,9 @@ export const publicController = {
     }
   },
 
-  callWaiterOrBill(req: Request, res: Response) {
+  async callWaiterOrBill(req: Request, res: Response) {
     try {
-      const result = publicService.callWaiterOrBill(
+      const result = await publicService.callWaiterOrBill(
         String(req.params.token),
         req.body || {},
       );
@@ -141,9 +141,9 @@ export const publicController = {
     }
   },
 
-  submitQrReview(req: Request, res: Response) {
+  async submitQrReview(req: Request, res: Response) {
     try {
-      const result = publicService.submitQrReview(
+      const result = await publicService.submitQrReview(
         String(req.params.token),
         String(req.params.orderId),
         req.body || {},
@@ -154,9 +154,9 @@ export const publicController = {
     }
   },
 
-  submitQrServiceRating(req: Request, res: Response) {
+  async submitQrServiceRating(req: Request, res: Response) {
     try {
-      const result = publicService.submitQrServiceRating(
+      const result = await publicService.submitQrServiceRating(
         String(req.params.token),
         req.body || {},
       );
@@ -167,18 +167,18 @@ export const publicController = {
   },
 
   // ── Storefront (Click & Collect & Livraison) ────────────────────────────
-  getStorefrontContext(req: Request, res: Response) {
+  async getStorefrontContext(req: Request, res: Response) {
     try {
-      const ctx = publicService.getStorefrontContext(String(req.params.slug));
+      const ctx = await publicService.getStorefrontContext(String(req.params.slug));
       res.json(ctx);
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement boutique en ligne.');
     }
   },
 
-  lookupStorefrontLoyalty(req: Request, res: Response) {
+  async lookupStorefrontLoyalty(req: Request, res: Response) {
     try {
-      const info = publicService.lookupPublicLoyaltyBySlug(
+      const info = await publicService.lookupPublicLoyaltyBySlug(
         String(req.params.slug),
         String(req.query.phone || ''),
       );
@@ -208,9 +208,9 @@ export const publicController = {
     }
   },
 
-  trackStorefrontOrder(req: Request, res: Response) {
+  async trackStorefrontOrder(req: Request, res: Response) {
     try {
-      const order = publicService.trackStorefrontOrder(
+      const order = await publicService.trackStorefrontOrder(
         String(req.params.slug),
         String(req.params.orderId),
       );
@@ -220,9 +220,9 @@ export const publicController = {
     }
   },
 
-  payStorefrontOrder(req: Request, res: Response) {
+  async payStorefrontOrder(req: Request, res: Response) {
     try {
-      const result = publicService.payStorefrontOrder(
+      const result = await publicService.payStorefrontOrder(
         String(req.params.slug),
         String(req.params.orderId),
         req.body || {},
@@ -233,9 +233,9 @@ export const publicController = {
     }
   },
 
-  submitStorefrontReview(req: Request, res: Response) {
+  async submitStorefrontReview(req: Request, res: Response) {
     try {
-      const result = publicService.submitStorefrontReview(
+      const result = await publicService.submitStorefrontReview(
         String(req.params.slug),
         String(req.params.orderId),
         req.body || {},
@@ -246,9 +246,9 @@ export const publicController = {
     }
   },
 
-  submitStorefrontServiceRating(req: Request, res: Response) {
+  async submitStorefrontServiceRating(req: Request, res: Response) {
     try {
-      const result = publicService.submitStorefrontServiceRating(
+      const result = await publicService.submitStorefrontServiceRating(
         String(req.params.slug),
         req.body || {},
       );
@@ -258,10 +258,10 @@ export const publicController = {
     }
   },
 
-  handlePaydunyaWebhook(req: Request, res: Response) {
+  async handlePaydunyaWebhook(req: Request, res: Response) {
     try {
       const sigHeader = req.get('x-paydunya-signature') || undefined;
-      const result = publicService.handlePaydunyaSubscriptionWebhook(
+      const result = await publicService.handlePaydunyaWebhook(
         (req.body || {}) as Record<string, unknown>,
         sigHeader,
       );

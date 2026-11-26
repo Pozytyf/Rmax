@@ -6,7 +6,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { createExpressApp } from './src/server/app.ts';
 import { getDb } from './src/server/db.ts';
-import { runKnexMigrations } from './src/server/knex.ts';
+import { assertKnexMigrationsCurrent, runKnexMigrations } from './src/server/knex.ts';
 import { setupWebSocketServer } from './src/server/ws.ts';
 
 function resolveCliArg(name: string): string | undefined {
@@ -45,9 +45,18 @@ async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
   const disableHmr = process.env.DISABLE_HMR === 'true';
 
-  // Initialize Knex SQLite3 pool, run initial schema migrations, and ensure seeded tables
-  await runKnexMigrations();
-  getDb();
+  // En production, PostgreSQL est obligatoire et le schéma doit déjà avoir été
+  // migré par le job de release. En développement, les migrations locales restent automatiques.
+  if (isProd) {
+    const client = (process.env.DATABASE_CLIENT || '').toLowerCase();
+    if (!['pg', 'postgres', 'postgresql'].includes(client)) {
+      throw new Error('La production exige DATABASE_CLIENT=pg.');
+    }
+    await assertKnexMigrationsCurrent();
+  } else {
+    await runKnexMigrations();
+    getDb();
+  }
 
   const app = createExpressApp();
   const httpServer = http.createServer(app);

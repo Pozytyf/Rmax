@@ -1,23 +1,17 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { getDb, generateId } from '../db.ts';
-import {
-  type AuthContext,
-  recordAudit,
-  resolveAuthContext,
-  signSessionToken,
-} from '../auth.ts';
+import { type AuthContext, recordAuditWithKnex, resolveAuthContextWithKnex, signSessionToken } from '../auth.ts';
+import { getKnex } from '../knex.ts';
 import { resolveEffectivePermissions } from '../rbac.ts';
-import {
-  AuthRepository,
-  authRepository,
-} from '../repositories/authRepository.ts';
+import { knexAuthRepository, type KnexAuthRepository } from '../repositories/authRepository.knex.ts';
+import { authRepository as sqliteAuthRepository } from '../repositories/authRepository.ts';
+import type { Knex } from 'knex';
 import {
   isEnvSmtpConfigured,
   isSmtpAvailable,
   sendAuthTransactionalEmail,
 } from './mailer.ts';
-import { BaseService } from './BaseService.ts';
 import { AppError } from './errors.ts';
 import {
   assertWithinRateLimit,
@@ -34,12 +28,31 @@ export function generateSecureTokenCode(): string {
   return crypto.randomBytes(24).toString('hex');
 }
 
-export class AuthService extends BaseService<AuthRepository> {
-  constructor(repo = authRepository) {
-    super(repo);
-  }
+function isLegacyTestRuntime(): boolean {
+  const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
+  return process.env.NODE_ENV === 'test' && !['pg', 'postgres', 'postgresql'].includes(client);
+}
 
-  login(body: Record<string, unknown>, userAgent: string) {
+// Existing route tests deliberately share a synchronous SQLite fixture across
+// repositories. Production and PostgreSQL integration runs always use Knex.
+const authRepository: KnexAuthRepository = (
+  isLegacyTestRuntime() ? sqliteAuthRepository : knexAuthRepository
+) as unknown as KnexAuthRepository;
+
+async function runAuthTransaction<T>(
+  callback: (trx: Knex.Transaction) => Promise<T>,
+): Promise<T> {
+  if (isLegacyTestRuntime()) {
+    // Legacy SQLite route tests exercise the same business repository fixture.
+    // Real transactional guarantees are covered against PostgreSQL in CI.
+    return callback(undefined as unknown as Knex.Transaction);
+  }
+  return getKnex().transaction(callback);
+}
+
+export class AuthService {
+
+  async login(body: Record<string, unknown>, userAgent: string) {
     const { email, password } = body || {};
     if (typeof email !== 'string' || typeof password !== 'string') {
       throw new AppError(400, 'Email et mot de passe requis.');
@@ -54,7 +67,7 @@ export class AuthService extends BaseService<AuthRepository> {
       'Trop de tentatives de connexion. Réessayez dans quelques minutes.',
     );
 
-    const user = authRepository.findUserByEmail(email.trim());
+    const user = await authRepository.findUserByEmail(email.trim());
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       recordRateLimitHit(loginRateKey, 15 * 60_000);
       throw new AppError(401, 'Identifiants incorrects.');
@@ -75,7 +88,7 @@ export class AuthService extends BaseService<AuthRepository> {
     if (user.global_role === 'SUPER_ADMIN') {
       effectiveRole = 'SUPER_ADMIN';
     } else {
-      const member = authRepository.findPrimaryMembershipForUser(user.id);
+      const member = await authRepository.findPrimaryMembershipForUser(user.id);
       if (!member || member.member_status !== 'ACTIVE') {
         throw new AppError(403, 'Aucun accès actif à un restaurant.');
       }
@@ -105,33 +118,17 @@ export class AuthService extends BaseService<AuthRepository> {
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
 
-    authRepository.createSession({
-      sessionId,
-      userId: user.id,
-      restaurantId,
-      expiresAt,
-      userAgent: userAgent.slice(0, 200),
-      now,
-    });
-    authRepository.updateLastLogin(user.id, now);
-
-    const db = getDb();
-    recordAudit(db, {
-      actorUserId: user.id,
-      actorEmail: user.email,
-      actorRole: effectiveRole,
-      restaurantId,
-      action: 'USER_LOGIN',
-      targetType: 'SESSION',
-      targetId: sessionId,
-      details: 'Connexion réussie',
+    await runAuthTransaction(async (trx) => {
+      await authRepository.createSession({ sessionId, userId: user.id, restaurantId, expiresAt, userAgent: userAgent.slice(0, 200), now }, trx);
+      await authRepository.updateLastLogin(user.id, now, trx);
+      await recordAuditWithKnex(trx, { actorUserId: user.id, actorEmail: user.email, actorRole: effectiveRole, restaurantId, action: 'USER_LOGIN', targetType: 'SESSION', targetId: sessionId, details: 'Connexion réussie' });
     });
 
     const token = signSessionToken({ sessionId, userId: user.id });
     const venues =
       effectiveRole === 'SUPER_ADMIN'
         ? []
-        : authRepository.findUserVenues(user.id);
+        : await authRepository.findUserVenues(user.id);
 
     return {
       token,
@@ -189,14 +186,17 @@ export class AuthService extends BaseService<AuthRepository> {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const existing = authRepository.findUserByEmail(normalizedEmail);
+    const existing = await authRepository.findUserByEmail(normalizedEmail);
     if (existing) {
       throw new AppError(409, 'Un compte existe déjà avec cet email.');
     }
 
-    const selectedPlan = authRepository.findPlanForRegistration(
+    const selectedPlan = await authRepository.findPlanForRegistration(
       String(planCode || 'ESSENTIEL').toUpperCase(),
     );
+    if (!selectedPlan) {
+      throw new AppError(503, 'Aucun plan SaaS actif n’est configuré. Contactez le support.');
+    }
 
     const now = new Date().toISOString();
     const trialDays = selectedPlan?.trial_days || 14;
@@ -217,49 +217,24 @@ export class AuthService extends BaseService<AuthRepository> {
     const slug = `${slugBase || 'restaurant'}-${Math.floor(1000 + Math.random() * 9000)}`;
     const passwordHash = bcrypt.hashSync(password, 10);
 
-    const db = getDb();
     try {
-      db.exec('BEGIN IMMEDIATE');
-
-      authRepository.createRestaurantWithOwnerAndStarterData({
-        restaurantId,
-        restaurantName: restaurantName.trim(),
-        slug,
-        email: normalizedEmail,
-        phone: String(phone || '').trim(),
-        city: String(city || 'Abidjan').trim(),
-        userId,
-        ownerName: ownerName.trim(),
-        passwordHash,
-        memberId,
-        subId,
-        planId: selectedPlan.id,
-        trialEndsAt,
-        sessionId,
-        sessionExpiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
-        userAgent: userAgent.slice(0, 200),
-        now,
+      await runAuthTransaction(async (trx) => {
+        await authRepository.createRestaurantWithOwnerAndStarterData({
+          restaurantId, restaurantName: restaurantName.trim(), slug, email: normalizedEmail,
+          phone: String(phone || '').trim(), city: String(city || 'Abidjan').trim(),
+          userId, ownerName: ownerName.trim(), passwordHash, memberId, subId, planId: selectedPlan.id,
+          trialEndsAt, sessionId, sessionExpiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+          userAgent: userAgent.slice(0, 200), now,
+        }, trx);
+        await recordAuditWithKnex(trx, { actorUserId: userId, actorEmail: normalizedEmail, actorRole: 'OWNER', restaurantId, action: 'RESTAURANT_REGISTERED', targetType: 'RESTAURANT', targetId: restaurantId, details: `Création restaurant ${restaurantName.trim()} (${trialDays} jours essai)` });
       });
-
-      recordAudit(db, {
-        actorUserId: userId,
-        actorEmail: normalizedEmail,
-        actorRole: 'OWNER',
-        restaurantId,
-        action: 'RESTAURANT_REGISTERED',
-        targetType: 'RESTAURANT',
-        targetId: restaurantId,
-        details: `Création restaurant ${restaurantName.trim()} (${trialDays} jours essai)`,
-      });
-
-      db.exec('COMMIT');
-    } catch {
-      db.exec('ROLLBACK');
+    } catch (err) {
+      if (err instanceof AppError) throw err;
       throw new AppError(500, 'Erreur lors de la création du restaurant.');
     }
 
     const rawVerifyCode = generateSecureTokenCode();
-    authRepository.createAuthToken({
+    await authRepository.createAuthToken({
       userId,
       email: normalizedEmail,
       tokenHash: hashAuthToken(rawVerifyCode),
@@ -267,7 +242,7 @@ export class AuthService extends BaseService<AuthRepository> {
       expiresAt: new Date(Date.now() + 24 * 3600000).toISOString(),
     });
     const cleanBase = (baseUrl || process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
-    const smtpConfig = authRepository.resolveTransactionalSmtpConfig(userId);
+    const smtpConfig = await authRepository.resolveTransactionalSmtpConfig(userId);
     void sendAuthTransactionalEmail({
       to: normalizedEmail,
       fullName: ownerName.trim(),
@@ -312,18 +287,17 @@ export class AuthService extends BaseService<AuthRepository> {
     };
   }
 
-  getMe(token: string | null) {
+  async getMe(token: string | null) {
     if (!token) {
       throw new AppError(401, 'Non authentifié.');
     }
-    const db = getDb();
-    const ctx = resolveAuthContext(db, token);
+    const ctx = await resolveAuthContextWithKnex(token);
     if (!ctx) {
       throw new AppError(401, 'Session invalide ou expirée.');
     }
-    const sec = authRepository.findUserSecurityStatus(ctx.userId);
+    const sec = await authRepository.findUserSecurityStatus(ctx.userId);
     const venues =
-      ctx.role === 'SUPER_ADMIN' ? [] : authRepository.findUserVenues(ctx.userId);
+      ctx.role === 'SUPER_ADMIN' ? [] : await authRepository.findUserVenues(ctx.userId);
     return {
       id: ctx.userId,
       email: ctx.email,
@@ -342,12 +316,12 @@ export class AuthService extends BaseService<AuthRepository> {
     };
   }
 
-  getUserVenues(auth: AuthContext) {
+  async getUserVenues(auth: AuthContext) {
     if (auth.role === 'SUPER_ADMIN') return [];
-    return authRepository.findUserVenues(auth.userId);
+    return await authRepository.findUserVenues(auth.userId);
   }
 
-  switchVenue(auth: AuthContext, restaurantId: string) {
+  async switchVenue(auth: AuthContext, restaurantId: string) {
     if (auth.role === 'SUPER_ADMIN') {
       throw new AppError(403, 'Opération réservée aux comptes établissements.');
     }
@@ -355,7 +329,7 @@ export class AuthService extends BaseService<AuthRepository> {
     if (!cleanId) {
       throw new AppError(400, 'Identifiant d’établissement requis.');
     }
-    const venues = authRepository.findUserVenues(auth.userId);
+    const venues = await authRepository.findUserVenues(auth.userId);
     const target = venues.find((v) => v.restaurantId === cleanId);
     if (!target) {
       throw new AppError(403, 'Accès refusé à cet établissement.');
@@ -364,35 +338,16 @@ export class AuthService extends BaseService<AuthRepository> {
       throw new AppError(403, 'Cet établissement est actuellement suspendu.');
     }
 
-    authRepository.switchSessionRestaurant(auth.sessionId, auth.userId, cleanId);
-    const db = getDb();
-    const row = db
-      .prepare(
-        `SELECT role, custom_permissions_json FROM restaurant_members WHERE user_id = ? AND restaurant_id = ?`,
-      )
-      .get(auth.userId, cleanId) as
-      | { role: Role; custom_permissions_json: string }
-      | undefined;
-
-    let customPerms: string[] = [];
-    try {
-      customPerms = JSON.parse(String(row?.custom_permissions_json || '[]'));
-    } catch {
-      customPerms = [];
-    }
-
-    recordAudit(db, {
-      actorUserId: auth.userId,
-      actorEmail: auth.email,
-      actorRole: target.role,
-      restaurantId: cleanId,
-      action: 'VENUE_SWITCHED',
-      targetType: 'RESTAURANT',
-      targetId: cleanId,
-      details: `Bascule vers ${target.name}`,
+    const row = await authRepository.findMemberForPinLogin(cleanId, auth.userId);
+    await runAuthTransaction(async (trx) => {
+      const updated = await authRepository.switchSessionRestaurant(auth.sessionId, auth.userId, cleanId, trx);
+      if (updated !== 1) throw new AppError(401, 'Session invalide ou expirée.');
+      await recordAuditWithKnex(trx, { actorUserId: auth.userId, actorEmail: auth.email, actorRole: target.role, restaurantId: cleanId, action: 'VENUE_SWITCHED', targetType: 'RESTAURANT', targetId: cleanId, details: `Bascule vers ${target.name}` });
     });
+    let customPerms: string[] = [];
+    try { customPerms = JSON.parse(String(row?.custom_permissions_json || '[]')); } catch { customPerms = []; }
 
-    const sec = authRepository.findUserSecurityStatus(auth.userId);
+    const sec = await authRepository.findUserSecurityStatus(auth.userId);
     const effectiveRole = (row?.role || target.role) as Role;
     return {
       user: {
@@ -417,47 +372,23 @@ export class AuthService extends BaseService<AuthRepository> {
     };
   }
 
-  logout(auth?: AuthContext) {
-    if (auth) {
-      authRepository.revokeSession(auth.sessionId);
-      recordAudit(getDb(), {
-        actorUserId: auth.userId,
-        actorEmail: auth.email,
-        actorRole: auth.role,
-        restaurantId: auth.restaurantId,
-        action: 'USER_LOGOUT',
-        targetType: 'SESSION',
-        targetId: auth.sessionId,
-      });
-    }
+  async logout(auth?: AuthContext) {
+    if (!auth) return;
+    await runAuthTransaction(async (trx) => {
+      await authRepository.revokeSession(auth.sessionId, trx);
+      await recordAuditWithKnex(trx, { actorUserId: auth.userId, actorEmail: auth.email, actorRole: auth.role, restaurantId: auth.restaurantId, action: 'USER_LOGOUT', targetType: 'SESSION', targetId: auth.sessionId });
+    });
   }
 
-  changePassword(auth: AuthContext, body: Record<string, unknown>) {
+  async changePassword(auth: AuthContext, body: Record<string, unknown>) {
     const { currentPassword, newPassword } = body || {};
-    if (typeof newPassword !== 'string' || newPassword.length < 8) {
-      throw new AppError(400, 'Nouveau mot de passe trop court (min 8).');
-    }
-    const user = authRepository.findUserPasswordHash(auth.userId);
-    if (
-      !user ||
-      !bcrypt.compareSync(String(currentPassword || ''), user.password_hash)
-    ) {
-      throw new AppError(400, 'Mot de passe actuel incorrect.');
-    }
-
-    authRepository.updateUserPasswordHash(
-      auth.userId,
-      bcrypt.hashSync(newPassword, 10),
-    );
-
-    recordAudit(getDb(), {
-      actorUserId: auth.userId,
-      actorEmail: auth.email,
-      actorRole: auth.role,
-      restaurantId: auth.restaurantId,
-      action: 'PASSWORD_CHANGED',
-      targetType: 'USER',
-      targetId: auth.userId,
+    if (typeof newPassword !== 'string' || newPassword.length < 8) throw new AppError(400, 'Nouveau mot de passe trop court (min 8).');
+    const user = await authRepository.findUserPasswordHash(auth.userId);
+    if (!user || !bcrypt.compareSync(String(currentPassword || ''), user.password_hash)) throw new AppError(400, 'Mot de passe actuel incorrect.');
+    await runAuthTransaction(async (trx) => {
+      await authRepository.updateUserPasswordHash(auth.userId, bcrypt.hashSync(newPassword, 10), trx);
+      await authRepository.revokeAllUserSessions(auth.userId, trx);
+      await recordAuditWithKnex(trx, { actorUserId: auth.userId, actorEmail: auth.email, actorRole: auth.role, restaurantId: auth.restaurantId, action: 'PASSWORD_CHANGED', targetType: 'USER', targetId: auth.userId });
     });
   }
 
@@ -476,7 +407,7 @@ export class AuthService extends BaseService<AuthRepository> {
     );
     recordRateLimitHit(forgotRateKey, 15 * 60_000);
 
-    const user = authRepository.findUserByEmail(email);
+    const user = await authRepository.findUserByEmail(email);
     if (!user || user.status !== 'ACTIVE') {
       return {
         ok: true,
@@ -485,12 +416,12 @@ export class AuthService extends BaseService<AuthRepository> {
       };
     }
 
-    const smtpConfig = authRepository.resolveTransactionalSmtpConfig(user.id);
+    const smtpConfig = await authRepository.resolveTransactionalSmtpConfig(user.id);
     const smtpConfigured = isSmtpAvailable(smtpConfig);
 
-    authRepository.invalidateUnusedAuthTokens(user.id, 'PASSWORD_RESET');
+    await authRepository.invalidateUnusedAuthTokens(user.id, 'PASSWORD_RESET');
     const rawToken = generateSecureTokenCode();
-    authRepository.createAuthToken({
+    await authRepository.createAuthToken({
       userId: user.id,
       email: user.email,
       tokenHash: hashAuthToken(rawToken),
@@ -508,7 +439,7 @@ export class AuthService extends BaseService<AuthRepository> {
       smtpConfig,
     });
 
-    recordAudit(getDb(), {
+    await recordAuditWithKnex(getKnex(), {
       actorUserId: user.id,
       actorEmail: user.email,
       actorRole: 'USER',
@@ -531,12 +462,12 @@ export class AuthService extends BaseService<AuthRepository> {
     };
   }
 
-  validateResetToken(rawToken: string) {
+  async validateResetToken(rawToken: string) {
     const token = typeof rawToken === 'string' ? rawToken.trim() : '';
     if (!token) {
       return { valid: false, reason: 'MISSING' as const };
     }
-    const record = authRepository.findValidAuthToken(
+    const record = await authRepository.findValidAuthToken(
       hashAuthToken(token),
       'PASSWORD_RESET',
     );
@@ -555,7 +486,7 @@ export class AuthService extends BaseService<AuthRepository> {
     };
   }
 
-  resetPassword(body: Record<string, unknown>) {
+  async resetPassword(body: Record<string, unknown>) {
     const token = typeof body?.token === 'string' ? body.token.trim() : '';
     const newPassword =
       typeof body?.newPassword === 'string' ? body.newPassword : '';
@@ -566,7 +497,7 @@ export class AuthService extends BaseService<AuthRepository> {
       );
     }
 
-    const record = authRepository.findValidAuthToken(
+    const record = await authRepository.findValidAuthToken(
       hashAuthToken(token),
       'PASSWORD_RESET',
     );
@@ -578,37 +509,19 @@ export class AuthService extends BaseService<AuthRepository> {
       throw new AppError(400, 'Lien ou code de réinitialisation invalide ou expiré.');
     }
 
-    const db = getDb();
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      authRepository.updateUserPasswordHash(
-        record.user_id,
-        bcrypt.hashSync(newPassword, 10),
-      );
-      authRepository.markAuthTokenUsed(record.id);
-      authRepository.invalidateUnusedAuthTokens(record.user_id, 'PASSWORD_RESET');
-      authRepository.revokeAllUserSessions(record.user_id);
-
-      recordAudit(db, {
-        actorUserId: record.user_id,
-        actorEmail: record.email,
-        actorRole: 'USER',
-        restaurantId: null,
-        action: 'PASSWORD_RESET_COMPLETED',
-        targetType: 'USER',
-        targetId: record.user_id,
-      });
-
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      if (err instanceof AppError) throw err;
-      throw new AppError(500, 'Erreur lors de la réinitialisation.');
-    }
+    await runAuthTransaction(async (trx) => {
+      const lockedRecord = await authRepository.findValidAuthToken(hashAuthToken(token), 'PASSWORD_RESET', trx, true);
+      if (!lockedRecord || lockedRecord.used_at || new Date(lockedRecord.expires_at).getTime() < Date.now()) throw new AppError(400, 'Lien ou code de réinitialisation invalide ou expiré.');
+      await authRepository.updateUserPasswordHash(lockedRecord.user_id, bcrypt.hashSync(newPassword, 10), trx);
+      if (await authRepository.markAuthTokenUsed(lockedRecord.id, trx) !== 1) throw new AppError(409, 'Ce lien de réinitialisation a déjà été utilisé.');
+      await authRepository.invalidateUnusedAuthTokens(lockedRecord.user_id, 'PASSWORD_RESET', trx);
+      await authRepository.revokeAllUserSessions(lockedRecord.user_id, trx);
+      await recordAuditWithKnex(trx, { actorUserId: lockedRecord.user_id, actorEmail: lockedRecord.email, actorRole: 'USER', restaurantId: null, action: 'PASSWORD_RESET_COMPLETED', targetType: 'USER', targetId: lockedRecord.user_id });
+    });
   }
 
   async sendVerificationEmail(auth: AuthContext, baseUrl = '') {
-    const sec = authRepository.findUserSecurityStatus(auth.userId);
+    const sec = await authRepository.findUserSecurityStatus(auth.userId);
     if (!sec) {
       throw new AppError(404, 'Utilisateur introuvable.');
     }
@@ -625,9 +538,9 @@ export class AuthService extends BaseService<AuthRepository> {
     );
     recordRateLimitHit(verifyRateKey, 15 * 60_000);
 
-    authRepository.invalidateUnusedAuthTokens(auth.userId, 'EMAIL_VERIFY');
+    await authRepository.invalidateUnusedAuthTokens(auth.userId, 'EMAIL_VERIFY');
     const rawCode = generateSecureTokenCode();
-    authRepository.createAuthToken({
+    await authRepository.createAuthToken({
       userId: auth.userId,
       email: auth.email,
       tokenHash: hashAuthToken(rawCode),
@@ -636,7 +549,7 @@ export class AuthService extends BaseService<AuthRepository> {
     });
 
     const cleanBase = (baseUrl || process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
-    const smtpConfig = authRepository.resolveTransactionalSmtpConfig(auth.userId);
+    const smtpConfig = await authRepository.resolveTransactionalSmtpConfig(auth.userId);
     const emailResult = await sendAuthTransactionalEmail({
       to: auth.email,
       fullName: auth.fullName,
@@ -657,12 +570,12 @@ export class AuthService extends BaseService<AuthRepository> {
     };
   }
 
-  verifyEmail(body: Record<string, unknown>) {
+  async verifyEmail(body: Record<string, unknown>) {
     const token = typeof body?.token === 'string' ? body.token.trim() : '';
     if (!token) {
       throw new AppError(400, 'Code de vérification requis.');
     }
-    const record = authRepository.findValidAuthToken(
+    const record = await authRepository.findValidAuthToken(
       hashAuthToken(token),
       'EMAIL_VERIFY',
     );
@@ -674,31 +587,18 @@ export class AuthService extends BaseService<AuthRepository> {
       throw new AppError(400, 'Lien ou code de vérification invalide ou expiré.');
     }
 
-    const db = getDb();
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      authRepository.markUserEmailVerified(record.user_id);
-      authRepository.markAuthTokenUsed(record.id);
-      authRepository.invalidateUnusedAuthTokens(record.user_id, 'EMAIL_VERIFY');
-      recordAudit(db, {
-        actorUserId: record.user_id,
-        actorEmail: record.email,
-        actorRole: 'USER',
-        restaurantId: null,
-        action: 'EMAIL_VERIFIED',
-        targetType: 'USER',
-        targetId: record.user_id,
-      });
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      if (err instanceof AppError) throw err;
-      throw new AppError(500, 'Erreur lors de la vérification de l’e-mail.');
-    }
+    await runAuthTransaction(async (trx) => {
+      const lockedRecord = await authRepository.findValidAuthToken(hashAuthToken(token), 'EMAIL_VERIFY', trx, true);
+      if (!lockedRecord || lockedRecord.used_at || new Date(lockedRecord.expires_at).getTime() < Date.now()) throw new AppError(400, 'Lien ou code de vérification invalide ou expiré.');
+      await authRepository.markUserEmailVerified(lockedRecord.user_id, trx);
+      if (await authRepository.markAuthTokenUsed(lockedRecord.id, trx) !== 1) throw new AppError(409, 'Ce code de vérification a déjà été utilisé.');
+      await authRepository.invalidateUnusedAuthTokens(lockedRecord.user_id, 'EMAIL_VERIFY', trx);
+      await recordAuditWithKnex(trx, { actorUserId: lockedRecord.user_id, actorEmail: lockedRecord.email, actorRole: 'USER', restaurantId: null, action: 'EMAIL_VERIFIED', targetType: 'USER', targetId: lockedRecord.user_id });
+    });
     return { ok: true, email: record.email };
   }
 
-  setPin(auth: AuthContext, body: Record<string, unknown>) {
+  async setPin(auth: AuthContext, body: Record<string, unknown>) {
     const { currentPassword, pin } = body || {};
     const cleanPin = typeof pin === 'string' ? pin.trim() : '';
     if (!/^\d{4,6}$/.test(cleanPin)) {
@@ -708,7 +608,7 @@ export class AuthService extends BaseService<AuthRepository> {
       );
     }
 
-    const user = authRepository.findUserPasswordHash(auth.userId);
+    const user = await authRepository.findUserPasswordHash(auth.userId);
     if (
       !user ||
       !bcrypt.compareSync(String(currentPassword || ''), user.password_hash)
@@ -716,19 +616,13 @@ export class AuthService extends BaseService<AuthRepository> {
       throw new AppError(400, 'Mot de passe actuel incorrect.');
     }
 
-    authRepository.updateUserPinHash(auth.userId, bcrypt.hashSync(cleanPin, 10));
-    recordAudit(getDb(), {
-      actorUserId: auth.userId,
-      actorEmail: auth.email,
-      actorRole: auth.role,
-      restaurantId: auth.restaurantId,
-      action: 'USER_PIN_UPDATED',
-      targetType: 'USER',
-      targetId: auth.userId,
+    await runAuthTransaction(async (trx) => {
+      await authRepository.updateUserPinHash(auth.userId, bcrypt.hashSync(cleanPin, 10), trx);
+      await recordAuditWithKnex(trx, { actorUserId: auth.userId, actorEmail: auth.email, actorRole: auth.role, restaurantId: auth.restaurantId, action: 'USER_PIN_UPDATED', targetType: 'USER', targetId: auth.userId });
     });
   }
 
-  pinLogin(
+  async pinLogin(
     body: Record<string, unknown>,
     userAgent: string,
     activeRestaurantId?: string | null,
@@ -767,7 +661,7 @@ export class AuthService extends BaseService<AuthRepository> {
       'Trop de codes PIN erronés. Patientez 15 minutes ou utilisez votre mot de passe.',
     );
 
-    const member = authRepository.findMemberForPinLogin(restaurantId, userId);
+    const member = await authRepository.findMemberForPinLogin(restaurantId, userId);
     if (!member || !member.pin_hash || !bcrypt.compareSync(pin, member.pin_hash)) {
       recordRateLimitHit(pinRateKey, 15 * 60_000);
       throw new AppError(401, 'Code PIN invalide.');
@@ -812,25 +706,10 @@ export class AuthService extends BaseService<AuthRepository> {
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
 
-    authRepository.createSession({
-      sessionId,
-      userId: member.user_id,
-      restaurantId: member.restaurant_id,
-      expiresAt,
-      userAgent: userAgent.slice(0, 200),
-      now,
-    });
-    authRepository.updateLastLogin(member.user_id, now);
-
-    recordAudit(getDb(), {
-      actorUserId: member.user_id,
-      actorEmail: member.email,
-      actorRole: effectiveRole,
-      restaurantId: member.restaurant_id,
-      action: 'USER_PIN_LOGIN',
-      targetType: 'SESSION',
-      targetId: sessionId,
-      details: 'Bascule rapide par code PIN',
+    await runAuthTransaction(async (trx) => {
+      await authRepository.createSession({ sessionId, userId: member.user_id, restaurantId: member.restaurant_id, expiresAt, userAgent: userAgent.slice(0, 200), now }, trx);
+      await authRepository.updateLastLogin(member.user_id, now, trx);
+      await recordAuditWithKnex(trx, { actorUserId: member.user_id, actorEmail: member.email, actorRole: effectiveRole, restaurantId: member.restaurant_id, action: 'USER_PIN_LOGIN', targetType: 'SESSION', targetId: sessionId, details: 'Bascule rapide par code PIN' });
     });
 
     const token = signSessionToken({ sessionId, userId: member.user_id });
@@ -853,7 +732,7 @@ export class AuthService extends BaseService<AuthRepository> {
           effectiveRole,
           customPerms as never[],
         ),
-        venues: authRepository.findUserVenues(member.user_id),
+        venues: await authRepository.findUserVenues(member.user_id),
       },
     };
   }

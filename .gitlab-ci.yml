@@ -1,0 +1,96 @@
+image: oven/bun:1
+
+stages:
+  - validate
+
+variables:
+  NODE_ENV: test
+  DATABASE_CLIENT: sqlite
+  BUN_INSTALL_CACHE_DIR: "$CI_PROJECT_DIR/.bun/install/cache"
+
+cache:
+  key:
+    files:
+      - bun.lock
+  paths:
+    - .bun/install/cache/
+
+before_script:
+  - bun --version
+  - bun install --frozen-lockfile
+
+typecheck:
+  stage: validate
+  script:
+    - bun run lint
+
+postgres-runtime-config:
+  stage: validate
+  script:
+    - bun run test:postgres-config
+
+existing-tests:
+  stage: validate
+  variables:
+    NODE_ENV: test
+    DATABASE_CLIENT: sqlite
+    DATABASE_URL: ""
+    SUPABASE_DB_URL: ""
+  script:
+    - bun run test
+
+full-test-suite:
+  stage: validate
+  variables:
+    NODE_ENV: test
+    DATABASE_CLIENT: sqlite
+    DATABASE_URL: ""
+    SUPABASE_DB_URL: ""
+  script:
+    - bun run test:all
+
+postgres-migrations:
+  stage: validate
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    DATABASE_CLIENT: pg
+    DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/restomax_test"
+    DATABASE_SSL: "false"
+    DB_POOL_MIN: "0"
+    DB_POOL_MAX: "5"
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: restomax_test
+  script:
+    - bun run src/server/migrate.ts latest
+    - bun run src/server/migrate.ts status
+    - bun run src/server/migrate.ts rollback
+    - bun run src/server/migrate.ts latest
+    - bun run test:supabase-sql
+    - bun test scripts/postgres-health.integration.test.ts
+
+supabase-bootstrap:
+  stage: validate
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/restomax_bootstrap_test"
+    DATABASE_SSL: "false"
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: restomax_bootstrap_test
+  script:
+    - bun run test:supabase-bootstrap
+
+production-build:
+  stage: validate
+  script:
+    - bun run build
+  artifacts:
+    when: on_success
+    expire_in: 7 days
+    paths:
+      - dist/

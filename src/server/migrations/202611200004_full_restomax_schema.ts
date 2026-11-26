@@ -53,6 +53,13 @@ export async function up(knex: Knex): Promise<void> {
       t.string('paydunya_public_key').notNullable().defaultTo('');
       t.string('paydunya_private_key').notNullable().defaultTo('');
       t.string('paydunya_token').notNullable().defaultTo('');
+      t.integer('loyalty_enabled').notNullable().defaultTo(1);
+      t.integer('loyalty_points_per_1000_xof').notNullable().defaultTo(10);
+      t.integer('loyalty_xof_per_point').notNullable().defaultTo(25);
+      t.integer('storefront_enabled').notNullable().defaultTo(1);
+      t.integer('delivery_enabled').notNullable().defaultTo(1);
+      t.text('delivery_zones_json').notNullable().defaultTo('[]');
+      t.text('pickup_slots_json').notNullable().defaultTo('[]');
       t.text('printer_settings_json')
         .notNullable()
         .defaultTo(
@@ -110,7 +117,7 @@ export async function up(knex: Knex): Promise<void> {
       t.string('restaurant_id').notNullable();
       t.string('subscription_id');
       t.integer('amount_xof').notNullable();
-      t.string('status').notNullable().defaultTo('PAID');
+      t.string('status').notNullable().defaultTo('PENDING');
       t.string('payment_method').notNullable();
       t.string('mode').notNullable().defaultTo('TEST');
       t.string('paid_at');
@@ -189,6 +196,14 @@ export async function up(knex: Knex): Promise<void> {
       t.string('order_type').notNullable();
       t.string('table_id');
       t.string('customer_name').notNullable().defaultTo('Client comptoir');
+      t.string('customer_phone');
+      t.text('delivery_address');
+      t.string('delivery_zone');
+      t.integer('delivery_fee_xof').notNullable().defaultTo(0);
+      t.string('scheduled_slot');
+      t.string('promo_code');
+      t.integer('loyalty_points_used').notNullable().defaultTo(0);
+      t.integer('loyalty_points_earned').notNullable().defaultTo(0);
       t.string('status').notNullable().defaultTo('PENDING');
       t.integer('subtotal_xof').notNullable();
       t.integer('discount_xof').notNullable().defaultTo(0);

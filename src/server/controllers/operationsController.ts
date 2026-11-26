@@ -4,24 +4,24 @@ import { handleControllerError } from '../services/errors.ts';
 
 export const operationsController = {
   // Combos
-  listCombos(req: Request, res: Response) {
+  async listCombos(req: Request, res: Response) {
     try {
-      res.json({ combos: operationsService.listCombos(req.auth!.restaurantId!) });
+      res.json({ combos: await operationsService.listCombos(req.auth!.restaurantId!) });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement formules.');
     }
   },
-  createCombo(req: Request, res: Response) {
+  async createCombo(req: Request, res: Response) {
     try {
-      const combo = operationsService.createCombo(req.auth!, req.body || {});
+      const combo = await operationsService.createCombo(req.auth!, req.body || {});
       res.status(201).json({ combo });
     } catch (err) {
       handleControllerError(res, err, 'Erreur création formule.');
     }
   },
-  updateCombo(req: Request, res: Response) {
+  async updateCombo(req: Request, res: Response) {
     try {
-      const combo = operationsService.updateCombo(
+      const combo = await operationsService.updateCombo(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -31,9 +31,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur mise à jour formule.');
     }
   },
-  deleteCombo(req: Request, res: Response) {
+  async deleteCombo(req: Request, res: Response) {
     try {
-      operationsService.deleteCombo(req.auth!, String(req.params.id));
+      await operationsService.deleteCombo(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression formule.');
@@ -41,18 +41,18 @@ export const operationsController = {
   },
 
   // Promotions & Happy Hour
-  listPromotions(req: Request, res: Response) {
+  async listPromotions(req: Request, res: Response) {
     try {
       res.json({
-        promotions: operationsService.listPromotions(req.auth!.restaurantId!),
+        promotions: await operationsService.listPromotions(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement promotions.');
     }
   },
-  createPromotion(req: Request, res: Response) {
+  async createPromotion(req: Request, res: Response) {
     try {
-      const promotion = operationsService.createPromotion(
+      const promotion = await operationsService.createPromotion(
         req.auth!,
         req.body || {},
       );
@@ -61,9 +61,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur création promotion.');
     }
   },
-  updatePromotion(req: Request, res: Response) {
+  async updatePromotion(req: Request, res: Response) {
     try {
-      operationsService.updatePromotion(
+      await operationsService.updatePromotion(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -73,9 +73,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur mise à jour promotion.');
     }
   },
-  deletePromotion(req: Request, res: Response) {
+  async deletePromotion(req: Request, res: Response) {
     try {
-      operationsService.deletePromotion(req.auth!, String(req.params.id));
+      await operationsService.deletePromotion(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression promotion.');
@@ -83,24 +83,24 @@ export const operationsController = {
   },
 
   // Cash Register & Z-Reports
-  getRegisterState(req: Request, res: Response) {
+  async getRegisterState(req: Request, res: Response) {
     try {
-      res.json(operationsService.getRegisterState(req.auth!.restaurantId!));
+      res.json(await operationsService.getRegisterState(req.auth!.restaurantId!));
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement caisse.');
     }
   },
-  openRegister(req: Request, res: Response) {
+  async openRegister(req: Request, res: Response) {
     try {
-      const session = operationsService.openRegister(req.auth!, req.body || {});
+      const session = await operationsService.openRegister(req.auth!, req.body || {});
       res.status(201).json({ session });
     } catch (err) {
       handleControllerError(res, err, 'Erreur ouverture de caisse.');
     }
   },
-  closeRegister(req: Request, res: Response) {
+  async closeRegister(req: Request, res: Response) {
     try {
-      const report = operationsService.closeRegister(req.auth!, req.body || {});
+      const report = await operationsService.closeRegister(req.auth!, req.body || {});
       res.json({ report });
     } catch (err) {
       handleControllerError(res, err, 'Erreur clôture Z.');
@@ -108,18 +108,18 @@ export const operationsController = {
   },
 
   // Table Calls
-  listTableCalls(req: Request, res: Response) {
+  async listTableCalls(req: Request, res: Response) {
     try {
       res.json({
-        calls: operationsService.listTableCalls(req.auth!.restaurantId!),
+        calls: await operationsService.listTableCalls(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement appels tables.');
     }
   },
-  acknowledgeTableCall(req: Request, res: Response) {
+  async acknowledgeTableCall(req: Request, res: Response) {
     try {
-      operationsService.acknowledgeTableCall(req.auth!, String(req.params.id));
+      await operationsService.acknowledgeTableCall(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur acquittement appel table.');
@@ -127,9 +127,9 @@ export const operationsController = {
   },
 
   // Loyalty
-  getCustomerLoyalty(req: Request, res: Response) {
+  async getCustomerLoyalty(req: Request, res: Response) {
     try {
-      const transactions = operationsService.getCustomerLoyaltyHistory(
+      const transactions = await operationsService.getCustomerLoyaltyHistory(
         req.auth!.restaurantId!,
         String(req.params.id),
       );
@@ -138,9 +138,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur historique fidélité.');
     }
   },
-  adjustCustomerLoyalty(req: Request, res: Response) {
+  async adjustCustomerLoyalty(req: Request, res: Response) {
     try {
-      const result = operationsService.adjustCustomerLoyalty(
+      const result = await operationsService.adjustCustomerLoyalty(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -152,16 +152,16 @@ export const operationsController = {
   },
 
   // Customer Reviews
-  listReviews(req: Request, res: Response) {
+  async listReviews(req: Request, res: Response) {
     try {
-      res.json(operationsService.listReviews(req.auth!.restaurantId!));
+      res.json(await operationsService.listReviews(req.auth!.restaurantId!));
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement avis clients.');
     }
   },
-  replyReview(req: Request, res: Response) {
+  async replyReview(req: Request, res: Response) {
     try {
-      operationsService.replyReview(
+      await operationsService.replyReview(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -173,10 +173,10 @@ export const operationsController = {
   },
 
   // Inventory Counts & Typed Waste
-  listInventoryCounts(req: Request, res: Response) {
+  async listInventoryCounts(req: Request, res: Response) {
     try {
       res.json({
-        counts: operationsService.listInventoryCounts(req.auth!.restaurantId!),
+        counts: await operationsService.listInventoryCounts(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement inventaires.');
@@ -207,24 +207,24 @@ export const operationsController = {
   },
 
   // Shifts & PIN Clock
-  listShiftsAndClocks(req: Request, res: Response) {
+  async listShiftsAndClocks(req: Request, res: Response) {
     try {
-      res.json(operationsService.listShiftsAndClocks(req.auth!.restaurantId!));
+      res.json(await operationsService.listShiftsAndClocks(req.auth!.restaurantId!));
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement planning & pointages.');
     }
   },
-  createShift(req: Request, res: Response) {
+  async createShift(req: Request, res: Response) {
     try {
-      const shift = operationsService.createShift(req.auth!, req.body || {});
+      const shift = await operationsService.createShift(req.auth!, req.body || {});
       res.status(201).json({ shift });
     } catch (err) {
       handleControllerError(res, err, 'Erreur création créneau.');
     }
   },
-  deleteShift(req: Request, res: Response) {
+  async deleteShift(req: Request, res: Response) {
     try {
-      operationsService.deleteShift(req.auth!, String(req.params.id));
+      await operationsService.deleteShift(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression créneau.');
@@ -240,10 +240,10 @@ export const operationsController = {
   },
 
   // B2B Invoices & Proformas
-  listB2bInvoices(req: Request, res: Response) {
+  async listB2bInvoices(req: Request, res: Response) {
     try {
       res.json({
-        documents: operationsService.listB2bInvoices(req.auth!.restaurantId!),
+        documents: await operationsService.listB2bInvoices(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement factures B2B.');

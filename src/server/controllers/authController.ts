@@ -18,10 +18,10 @@ export function resolveSafeBaseUrl(req: Request): string {
 }
 
 export const authController = {
-  login(req: Request, res: Response) {
+  async login(req: Request, res: Response) {
     try {
       const userAgent = String(req.headers['user-agent'] || '');
-      const result = authService.login(req.body || {}, userAgent);
+      const result = await authService.login(req.body || {}, userAgent);
 
       setAuthCookie(req, res, result.token);
 
@@ -53,19 +53,19 @@ export const authController = {
     }
   },
 
-  me(req: Request, res: Response) {
+  async me(req: Request, res: Response) {
     try {
       const token = extractToken(req);
-      const user = authService.getMe(token);
+      const user = await authService.getMe(token);
       res.json({ user });
     } catch (err) {
       handleControllerError(res, err, 'Erreur vérification session.');
     }
   },
 
-  logout(req: Request, res: Response) {
+  async logout(req: Request, res: Response) {
     try {
-      authService.logout(req.auth);
+      await authService.logout(req.auth);
       res.clearCookie('restomax_token', { path: '/' });
       res.json({ ok: true });
     } catch (err) {
@@ -73,9 +73,9 @@ export const authController = {
     }
   },
 
-  changePassword(req: Request, res: Response) {
+  async changePassword(req: Request, res: Response) {
     try {
-      authService.changePassword(req.auth!, req.body || {});
+      await authService.changePassword(req.auth!, req.body || {});
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur changement de mot de passe.');
@@ -96,10 +96,10 @@ export const authController = {
     }
   },
 
-  validateResetToken(req: Request, res: Response) {
+  async validateResetToken(req: Request, res: Response) {
     try {
       const token = typeof req.query.token === 'string' ? req.query.token : '';
-      const result = authService.validateResetToken(token);
+      const result = await authService.validateResetToken(token);
       res.json(result);
     } catch (err) {
       handleControllerError(
@@ -110,9 +110,9 @@ export const authController = {
     }
   },
 
-  resetPassword(req: Request, res: Response) {
+  async resetPassword(req: Request, res: Response) {
     try {
-      authService.resetPassword(req.body || {});
+      await authService.resetPassword(req.body || {});
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(
@@ -140,28 +140,28 @@ export const authController = {
     }
   },
 
-  verifyEmail(req: Request, res: Response) {
+  async verifyEmail(req: Request, res: Response) {
     try {
-      const result = authService.verifyEmail(req.body || {});
+      const result = await authService.verifyEmail(req.body || {});
       res.json(result);
     } catch (err) {
       handleControllerError(res, err, 'Erreur vérification e-mail.');
     }
   },
 
-  setPin(req: Request, res: Response) {
+  async setPin(req: Request, res: Response) {
     try {
-      authService.setPin(req.auth!, req.body || {});
+      await authService.setPin(req.auth!, req.body || {});
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur configuration code PIN.');
     }
   },
 
-  pinLogin(req: Request, res: Response) {
+  async pinLogin(req: Request, res: Response) {
     try {
       const userAgent = String(req.headers['user-agent'] || '');
-      const result = authService.pinLogin(
+      const result = await authService.pinLogin(
         req.body || {},
         userAgent,
         req.auth?.restaurantId || null,
@@ -175,18 +175,18 @@ export const authController = {
     }
   },
 
-  getVenues(req: Request, res: Response) {
+  async getVenues(req: Request, res: Response) {
     try {
-      const venues = authService.getUserVenues(req.auth!);
+      const venues = await authService.getUserVenues(req.auth!);
       res.json({ venues });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement établissements.');
     }
   },
 
-  switchVenue(req: Request, res: Response) {
+  async switchVenue(req: Request, res: Response) {
     try {
-      const result = authService.switchVenue(
+      const result = await authService.switchVenue(
         req.auth!,
         String(req.body?.restaurantId || ''),
       );

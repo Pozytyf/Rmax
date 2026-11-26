@@ -14,9 +14,9 @@ export const restaurantController = {
     }
   },
 
-  getMenu(req: Request, res: Response) {
+  async getMenu(req: Request, res: Response) {
     try {
-      const menu = restaurantService.getMenu(req.auth!.restaurantId!);
+      const menu = await restaurantService.getMenu(req.auth!.restaurantId!);
       res.json(menu);
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement menu.');
@@ -483,10 +483,10 @@ export const restaurantController = {
     }
   },
 
-  posPinSwitch(req: Request, res: Response) {
+  async posPinSwitch(req: Request, res: Response) {
     try {
       const userAgent = String(req.headers['user-agent'] || '');
-      const result = authService.pinLogin(
+      const result = await authService.pinLogin(
         req.body || {},
         userAgent,
         req.auth!.restaurantId!,

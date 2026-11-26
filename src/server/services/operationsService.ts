@@ -1,11 +1,13 @@
 import bcrypt from 'bcryptjs';
 import { getDb, generateId } from '../db.ts';
-import { type AuthContext, recordAudit } from '../auth.ts';
+import { type AuthContext, recordAudit, recordAuditWithKnex } from '../auth.ts';
 import {
   operationsRepository,
   OperationsRepository,
 } from '../repositories/operationsRepository.ts';
 import { broadcastRestaurantEvent } from '../ws.ts';
+import { getKnex } from '../knex.ts';
+import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
 import {
   assertWithinRateLimit,
   clearRateLimit,
@@ -14,18 +16,24 @@ import {
 import { BaseService } from './BaseService.ts';
 import { AppError } from './errors.ts';
 
+function usesPostgresRepositories(): boolean {
+  return ['pg', 'postgres', 'postgresql'].includes((process.env.DATABASE_CLIENT || '').toLowerCase());
+}
+
 export class OperationsService extends BaseService<OperationsRepository> {
   constructor(repo = operationsRepository) {
     super(repo);
   }
 
   // ── 1. Combos / Formules ─────────────────────────────────────────────────
-  listCombos(rid: string) {
+  async listCombos(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findCombos(rid, false);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findCombos(rid, false)
+      : operationsRepository.findCombos(rid, false);
   }
 
-  createCombo(auth: AuthContext, body: Record<string, unknown>) {
+  async createCombo(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
     const priceXof = Math.round(Number(body?.priceXof));
@@ -55,7 +63,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
       throw new AppError(400, 'Ajoutez au moins un plat ou composant à la formule.');
     }
 
-    const id = operationsRepository.createCombo({
+    const comboParams = {
       rid,
       name,
       description: String(body?.description || '').trim(),
@@ -66,9 +74,12 @@ export class OperationsService extends BaseService<OperationsRepository> {
           : null,
       isDailySpecial: Boolean(body?.isDailySpecial),
       items,
-    });
+    };
+    const id = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.createCombo(comboParams)
+      : operationsRepository.createCombo(comboParams);
 
-    recordAudit(getDb(), {
+    const auditParams = {
       actorUserId: auth.userId,
       actorEmail: auth.email,
       actorRole: auth.role,
@@ -77,14 +88,20 @@ export class OperationsService extends BaseService<OperationsRepository> {
       targetType: 'MENU_COMBO',
       targetId: id,
       details: `${name} (${priceXof} FCFA)`,
-    });
+    };
+    if (usesPostgresRepositories()) await recordAuditWithKnex(getKnex(), auditParams);
+    else recordAudit(getDb(), auditParams);
     broadcastRestaurantEvent(rid, 'menu:updated', { comboId: id });
-    return operationsRepository.findComboById(id, rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findComboById(id, rid)
+      : operationsRepository.findComboById(id, rid);
   }
 
-  updateCombo(auth: AuthContext, id: string, body: Record<string, unknown>) {
+  async updateCombo(auth: AuthContext, id: string, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
-    const existing = operationsRepository.findComboById(id, rid);
+    const existing = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findComboById(id, rid)
+      : operationsRepository.findComboById(id, rid);
     if (!existing) throw new AppError(404, 'Formule introuvable.');
 
     const updates: Parameters<typeof operationsRepository.updateCombo>[2] = {};
@@ -126,25 +143,32 @@ export class OperationsService extends BaseService<OperationsRepository> {
             x !== null,
         );
     }
-    operationsRepository.updateCombo(id, rid, updates);
+    if (usesPostgresRepositories()) await knexOperationsReadRepository.updateCombo(id, rid, updates);
+    else operationsRepository.updateCombo(id, rid, updates);
     broadcastRestaurantEvent(rid, 'menu:updated', { comboId: id });
-    return operationsRepository.findComboById(id, rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findComboById(id, rid)
+      : operationsRepository.findComboById(id, rid);
   }
 
-  deleteCombo(auth: AuthContext, id: string) {
+  async deleteCombo(auth: AuthContext, id: string) {
     const rid = auth.restaurantId!;
-    const changes = operationsRepository.deleteCombo(id, rid);
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.deleteCombo(id, rid)
+      : operationsRepository.deleteCombo(id, rid);
     if (!changes) throw new AppError(404, 'Formule introuvable.');
     broadcastRestaurantEvent(rid, 'menu:updated', { comboId: id });
   }
 
   // ── 2. Promotions & Happy Hour ───────────────────────────────────────────
-  listPromotions(rid: string) {
+  async listPromotions(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findPromotions(rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findPromotions(rid)
+      : operationsRepository.findPromotions(rid);
   }
 
-  createPromotion(auth: AuthContext, body: Record<string, unknown>) {
+  async createPromotion(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
     const promoType =
@@ -196,7 +220,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
         ? Math.max(1, Math.floor(Number(body.maxUses)))
         : null;
 
-    const id = operationsRepository.createPromotion({
+    const promotionParams = {
       rid,
       name,
       code,
@@ -212,9 +236,12 @@ export class OperationsService extends BaseService<OperationsRepository> {
           ? body.categoryId.trim()
           : null,
       maxUses,
-    });
+    };
+    const id = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.createPromotion(promotionParams)
+      : operationsRepository.createPromotion(promotionParams);
 
-    recordAudit(getDb(), {
+    const auditParams = {
       actorUserId: auth.userId,
       actorEmail: auth.email,
       actorRole: auth.role,
@@ -223,16 +250,18 @@ export class OperationsService extends BaseService<OperationsRepository> {
       targetType: 'PROMOTION',
       targetId: id,
       details: `${promoType} ${code || name} (-${discountValue}${discountType === 'PERCENT' ? '%' : ' FCFA'})`,
-    });
+    };
+    if (usesPostgresRepositories()) await recordAuditWithKnex(getKnex(), auditParams);
+    else recordAudit(getDb(), auditParams);
     broadcastRestaurantEvent(rid, 'menu:updated', { promoId: id });
-    return operationsRepository.findPromotions(rid).find((p) => p.id === id);
+    return (await this.listPromotions(rid)).find((p) => p.id === id);
   }
 
-  updatePromotion(auth: AuthContext, id: string, body: Record<string, unknown>) {
+  async updatePromotion(auth: AuthContext, id: string, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
-    const existing = operationsRepository.findPromotions(rid).find((p) => p.id === id);
+    const existing = (await this.listPromotions(rid)).find((p) => p.id === id);
     if (!existing) throw new AppError(404, 'Promotion introuvable.');
-    operationsRepository.updatePromotion(id, rid, {
+    const updates = {
       name: typeof body?.name === 'string' ? body.name.trim() : undefined,
       active: typeof body?.active === 'boolean' ? body.active : undefined,
       discountValue:
@@ -247,29 +276,43 @@ export class OperationsService extends BaseService<OperationsRepository> {
         typeof body?.endTime === 'string' && /^\d{2}:\d{2}$/.test(body.endTime)
           ? body.endTime
           : undefined,
-    });
+    };
+    if (usesPostgresRepositories()) await knexOperationsReadRepository.updatePromotion(id, rid, updates);
+    else operationsRepository.updatePromotion(id, rid, updates);
     broadcastRestaurantEvent(rid, 'menu:updated', { promoId: id });
   }
 
-  deletePromotion(auth: AuthContext, id: string) {
+  async deletePromotion(auth: AuthContext, id: string) {
     const rid = auth.restaurantId!;
-    const changes = operationsRepository.deletePromotion(id, rid);
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.deletePromotion(id, rid)
+      : operationsRepository.deletePromotion(id, rid);
     if (!changes) throw new AppError(404, 'Promotion introuvable.');
     broadcastRestaurantEvent(rid, 'menu:updated', { promoId: id });
   }
 
   // ── 3. Cash Register & Z-Reports ─────────────────────────────────────────
-  getRegisterState(rid: string) {
+  async getRegisterState(rid: string) {
     this.ensureTenantId(rid);
-    const open = operationsRepository.findOpenRegister(rid);
+    const usePostgres = usesPostgresRepositories();
+    const [open, history] = usePostgres
+      ? await Promise.all([
+          knexOperationsReadRepository.findOpenRegister(rid),
+          knexOperationsReadRepository.findClosedRegisters(rid),
+        ])
+      : [
+          operationsRepository.findOpenRegister(rid),
+          operationsRepository.findClosedRegisters(rid),
+        ];
     const liveTotals = open
-      ? operationsRepository.computeRegisterLiveTotals(
-          rid,
-          open.openedAt,
-          open.openingFloatXof,
-        )
+      ? usePostgres
+        ? await knexOperationsReadRepository.computeRegisterLiveTotals(
+            rid, open.openedAt, open.openingFloatXof,
+          )
+        : operationsRepository.computeRegisterLiveTotals(
+            rid, open.openedAt, open.openingFloatXof,
+          )
       : null;
-    const history = operationsRepository.findClosedRegisters(rid);
     return {
       activeSession: open,
       liveTotals,
@@ -284,8 +327,27 @@ export class OperationsService extends BaseService<OperationsRepository> {
     };
   }
 
-  openRegister(auth: AuthContext, body: Record<string, unknown>) {
+  async openRegister(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      const openingFloatXof = Math.max(0, Math.round(Number(body?.openingFloatXof || 0)));
+      const session = await getKnex().transaction(async (trx) => {
+        const created = await knexOperationsReadRepository.openRegisterSession(trx, {
+          rid, userId: auth.userId, userName: auth.fullName,
+          openingFloatXof, notes: String(body?.notes || '').slice(0, 300),
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'CASH_REGISTER_OPENED', targetType: 'CASH_REGISTER',
+          targetId: created.id,
+          details: `Fond de caisse initial : ${openingFloatXof} FCFA`,
+        });
+        return created;
+      });
+      broadcastRestaurantEvent(rid, 'register:updated', { status: 'OPEN', id: session.id });
+      return session;
+    }
     const existing = operationsRepository.findOpenRegister(rid);
     if (existing) {
       throw new AppError(
@@ -319,8 +381,50 @@ export class OperationsService extends BaseService<OperationsRepository> {
     return session;
   }
 
-  closeRegister(auth: AuthContext, body: Record<string, unknown>) {
+  async closeRegister(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      const countedCashXof = Math.max(0, Math.round(Number(body?.countedCashXof || 0)));
+      const countedMobileXof = Math.max(0, Math.round(Number(body?.countedMobileXof || 0)));
+      const countedCardXof = Math.max(0, Math.round(Number(body?.countedCardXof || 0)));
+      const report = await getKnex().transaction(async (trx) => {
+        const open = await knexOperationsReadRepository.findOpenRegisterForUpdate(trx, rid);
+        if (!open) throw new AppError(404, 'Aucune session de caisse ouverte à clôturer.');
+        const closedRow = await trx('cash_register_sessions')
+          .where({ restaurant_id: rid, status: 'CLOSED' })
+          .count({ c: '*' }).first();
+        const live = await knexOperationsReadRepository.computeRegisterLiveTotals(
+          rid, open.openedAt, open.openingFloatXof, trx,
+        );
+        const totalExpected = live.expectedCashXof + live.expectedMobileXof + live.expectedCardXof;
+        const totalCounted = countedCashXof + countedMobileXof + countedCardXof;
+        const varianceXof = totalCounted - totalExpected;
+        const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const zNumber = `Z-${ymd}-${String(Number(closedRow?.c || 0) + 1).padStart(3, '0')}`;
+        const closed = await knexOperationsReadRepository.closeRegisterSession(trx, {
+          id: open.id, rid, zNumber, userId: auth.userId, userName: auth.fullName,
+          expectedCashXof: live.expectedCashXof,
+          expectedMobileXof: live.expectedMobileXof,
+          expectedCardXof: live.expectedCardXof,
+          countedCashXof, countedMobileXof, countedCardXof,
+          varianceXof, totalSalesXof: live.totalSalesXof,
+          refundsXof: live.refundsXof, ordersCount: live.ordersCount,
+          notes: String(body?.notes || open.notes || '').slice(0, 500),
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'CASH_REGISTER_CLOSED', targetType: 'CASH_REGISTER',
+          targetId: closed.id,
+          details: `${zNumber} · Ventes ${live.totalSalesXof} FCFA · Écart ${varianceXof} FCFA`,
+        });
+        return { closed, zNumber };
+      });
+      broadcastRestaurantEvent(rid, 'register:updated', {
+        status: 'CLOSED', zNumber: report.zNumber, id: report.closed.id,
+      });
+      return report.closed;
+    }
     const open = operationsRepository.findOpenRegister(rid);
     if (!open) {
       throw new AppError(404, 'Aucune session de caisse ouverte à clôturer.');
@@ -399,18 +503,18 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 4. Table Calls ───────────────────────────────────────────────────────
-  listTableCalls(rid: string) {
+  async listTableCalls(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findTableCalls(rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findTableCalls(rid)
+      : operationsRepository.findTableCalls(rid);
   }
 
-  acknowledgeTableCall(auth: AuthContext, callId: string) {
+  async acknowledgeTableCall(auth: AuthContext, callId: string) {
     const rid = auth.restaurantId!;
-    const changes = operationsRepository.acknowledgeTableCall(
-      callId,
-      rid,
-      auth.fullName,
-    );
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.acknowledgeTableCall(callId, rid, auth.fullName)
+      : operationsRepository.acknowledgeTableCall(callId, rid, auth.fullName);
     if (!changes) throw new AppError(404, 'Appel de table introuvable.');
     broadcastRestaurantEvent(rid, 'table:call_ack', {
       id: callId,
@@ -419,12 +523,14 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 5. Loyalty History & Manual Adjustments ──────────────────────────────
-  getCustomerLoyaltyHistory(rid: string, customerId: string) {
+  async getCustomerLoyaltyHistory(rid: string, customerId: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findLoyaltyTransactions(rid, customerId);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findLoyaltyTransactions(rid, customerId)
+      : operationsRepository.findLoyaltyTransactions(rid, customerId);
   }
 
-  adjustCustomerLoyalty(
+  async adjustCustomerLoyalty(
     auth: AuthContext,
     customerId: string,
     body: Record<string, unknown>,
@@ -434,6 +540,24 @@ export class OperationsService extends BaseService<OperationsRepository> {
     const reason = String(body?.reason || 'Ajustement manuel caisse').trim();
     if (!Number.isFinite(delta) || delta === 0) {
       throw new AppError(400, 'Nombre de points non nul requis.');
+    }
+
+    const now = new Date().toISOString();
+    if (usesPostgresRepositories()) {
+      return getKnex().transaction(async (trx) => {
+        const result = await knexOperationsReadRepository.adjustCustomerLoyalty(trx, {
+          restaurantId: rid, customerId, pointsDelta: delta, reason, now,
+        });
+        if (!result) throw new AppError(404, 'Client introuvable.');
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'LOYALTY_ADJUSTED', targetType: 'CUSTOMER',
+          targetId: customerId,
+          details: `${result.fullName} : ${result.appliedDelta > 0 ? `+${result.appliedDelta}` : result.appliedDelta} pts (${reason})`,
+        });
+        return { customerId, loyaltyPoints: result.loyaltyPoints };
+      });
     }
 
     const db = getDb();
@@ -447,7 +571,6 @@ export class OperationsService extends BaseService<OperationsRepository> {
     if (!cust) throw new AppError(404, 'Client introuvable.');
 
     const nextPoints = Math.max(0, Number(cust.loyalty_points || 0) + delta);
-    const now = new Date().toISOString();
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare(
@@ -478,9 +601,11 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 6. Customer Reviews ──────────────────────────────────────────────────
-  listReviews(rid: string) {
+  async listReviews(rid: string) {
     this.ensureTenantId(rid);
-    const reviews = operationsRepository.findCustomerReviews(rid);
+    const reviews = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findCustomerReviews(rid)
+      : operationsRepository.findCustomerReviews(rid);
     const total = reviews.length;
     const round1 = (val: number) => Math.round(val * 10) / 10;
     const avgRating =
@@ -545,15 +670,17 @@ export class OperationsService extends BaseService<OperationsRepository> {
     };
   }
 
-  replyReview(auth: AuthContext, reviewId: string, body: Record<string, unknown>) {
+  async replyReview(auth: AuthContext, reviewId: string, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const reply = String(body?.reply || '').trim();
     if (reply.length < 2) {
       throw new AppError(400, 'Veuillez saisir une réponse client.');
     }
-    const changes = operationsRepository.replyToReview(reviewId, rid, reply);
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.replyToReview(reviewId, rid, reply)
+      : operationsRepository.replyToReview(reviewId, rid, reply);
     if (!changes) throw new AppError(404, 'Avis client introuvable.');
-    recordAudit(getDb(), {
+    const auditParams = {
       actorUserId: auth.userId,
       actorEmail: auth.email,
       actorRole: auth.role,
@@ -561,13 +688,17 @@ export class OperationsService extends BaseService<OperationsRepository> {
       action: 'CUSTOMER_REVIEW_REPLIED',
       targetType: 'REVIEW',
       targetId: reviewId,
-    });
+    };
+    if (usesPostgresRepositories()) await recordAuditWithKnex(getKnex(), auditParams);
+    else recordAudit(getDb(), auditParams);
   }
 
   // ── 7. Inventory Counts & Typed Waste ────────────────────────────────────
-  listInventoryCounts(rid: string) {
+  async listInventoryCounts(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findInventoryCounts(rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findInventoryCounts(rid)
+      : operationsRepository.findInventoryCounts(rid);
   }
 
   createInventoryCount(auth: AuthContext, body: Record<string, unknown>) {
@@ -801,10 +932,14 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 8. Staff Shifts & PIN Time Clock ─────────────────────────────────────
-  listShiftsAndClocks(rid: string) {
+  async listShiftsAndClocks(rid: string) {
     this.ensureTenantId(rid);
-    const shifts = operationsRepository.findStaffShifts(rid);
-    const clocks = operationsRepository.findStaffTimeClocks(rid);
+    const [shifts, clocks] = usesPostgresRepositories()
+      ? await Promise.all([
+          knexOperationsReadRepository.findStaffShifts(rid),
+          knexOperationsReadRepository.findStaffTimeClocks(rid),
+        ])
+      : [operationsRepository.findStaffShifts(rid), operationsRepository.findStaffTimeClocks(rid)];
     const activeClocks = clocks.filter((c) => !c.clockOutAt);
 
     const hoursByUser = new Map<
@@ -835,7 +970,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
     };
   }
 
-  createShift(auth: AuthContext, body: Record<string, unknown>) {
+  async createShift(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const userId = typeof body?.userId === 'string' ? body.userId.trim() : '';
     const shiftDate =
@@ -852,6 +987,13 @@ export class OperationsService extends BaseService<OperationsRepository> {
         : '';
     if (!userId || !shiftDate || !startTime || !endTime) {
       throw new AppError(400, 'Employé, date et horaires (début/fin) requis.');
+    }
+
+    if (usesPostgresRepositories()) {
+      return knexOperationsReadRepository.createShift({
+        restaurantId: rid, userId, shiftDate, startTime, endTime,
+        notes: String(body?.notes || '').slice(0, 200),
+      });
     }
 
     const db = getDb();
@@ -889,11 +1031,13 @@ export class OperationsService extends BaseService<OperationsRepository> {
     return operationsRepository.findStaffShifts(rid).find((s) => s.id === id);
   }
 
-  deleteShift(auth: AuthContext, shiftId: string) {
+  async deleteShift(auth: AuthContext, shiftId: string) {
     const rid = auth.restaurantId!;
-    const changes = getDb()
-      .prepare('DELETE FROM staff_shifts WHERE id = ? AND restaurant_id = ?')
-      .run(shiftId, rid).changes;
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.deleteShift(rid, shiftId)
+      : getDb()
+          .prepare('DELETE FROM staff_shifts WHERE id = ? AND restaurant_id = ?')
+          .run(shiftId, rid).changes;
     if (!changes) throw new AppError(404, 'Créneau introuvable.');
   }
 
@@ -1029,9 +1173,11 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 9. B2B Proforma & Invoices ───────────────────────────────────────────
-  listB2bInvoices(rid: string) {
+  async listB2bInvoices(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findB2bInvoices(rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findB2bInvoices(rid)
+      : operationsRepository.findB2bInvoices(rid);
   }
 
   createB2bInvoice(auth: AuthContext, body: Record<string, unknown>) {
