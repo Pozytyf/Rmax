@@ -368,6 +368,31 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
       created_at: now,
     });
 
+    const register = await db.transaction((trx) =>
+      knexOperationsReadRepository.openRegisterSession(trx, {
+        rid: restaurantId, userId, userName: 'Menu Test Owner',
+        openingFloatXof: 10000, notes: 'integration',
+      }),
+    );
+    assert.equal(register.status, 'OPEN');
+    const liveTotals = await knexOperationsReadRepository.computeRegisterLiveTotals(
+      restaurantId, register.openedAt, register.openingFloatXof,
+    );
+    assert.equal(liveTotals.expectedCashXof, 10000);
+    const closedRegister = await db.transaction((trx) =>
+      knexOperationsReadRepository.closeRegisterSession(trx, {
+        id: register.id, rid: restaurantId, zNumber: 'Z-IT-001',
+        userId, userName: 'Menu Test Owner',
+        expectedCashXof: liveTotals.expectedCashXof,
+        expectedMobileXof: liveTotals.expectedMobileXof,
+        expectedCardXof: liveTotals.expectedCardXof,
+        countedCashXof: 10000, countedMobileXof: 0, countedCardXof: 0,
+        varianceXof: 0, totalSalesXof: 0, refundsXof: 0,
+        ordersCount: 0, notes: 'integration close',
+      }),
+    );
+    assert.equal(closedRegister.status, 'CLOSED');
+
     const categories = await knexRestaurantStockRepository.findMenuCategories(restaurantId);
     const items = await knexRestaurantStockRepository.findMenuItems(restaurantId);
     assert.ok(categories.some((row) => String(row.id) === String(category.id)));
@@ -397,6 +422,7 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal((await knexOperationsReadRepository.findPromotions(`other_${suffix}`)).length, 0);
   } finally {
     if (promotionId) await db('promotions').where({ id: promotionId, restaurant_id: restaurantId }).del();
+    await db('cash_register_sessions').where({ restaurant_id: restaurantId }).del();
     if (comboId) await db('menu_combos').where({ id: comboId, restaurant_id: restaurantId }).del();
     await db('menu_items').where({ id: menuItemId, restaurant_id: restaurantId }).del();
     await db('audit_logs').where({ restaurant_id: restaurantId }).del();
