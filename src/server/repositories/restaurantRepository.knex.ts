@@ -476,6 +476,130 @@ export class KnexRestaurantStockRepository {
     }));
   }
 
+  async findPurchaseOrders(rid: string) {
+    const orders = await this.db('purchase_orders')
+      .where({ restaurant_id: rid }).orderBy('created_at', 'desc');
+    if (!orders.length) return [];
+    const ids = orders.map((row) => String(row.id));
+    const items = await this.db('purchase_order_items')
+      .whereIn('purchase_order_id', ids).orderBy('purchase_order_id', 'asc');
+    const byOrder = new Map<string, Array<Record<string, unknown>>>();
+    for (const item of items) {
+      const key = String(item.purchase_order_id);
+      const list = byOrder.get(key) || [];
+      list.push({
+        id: String(item.id), purchaseOrderId: key,
+        stockId: String(item.stock_id), stockName: String(item.stock_name),
+        unit: String(item.unit), quantity: Number(item.quantity || 0),
+        unitCostXof: Number(item.unit_cost_xof || 0),
+        lineTotalXof: Number(item.line_total_xof || 0),
+      });
+      byOrder.set(key, list);
+    }
+    return orders.map((po) => ({
+      id: String(po.id), restaurantId: String(po.restaurant_id),
+      poNumber: String(po.po_number), supplierName: String(po.supplier_name),
+      status: String(po.status), totalCostXof: Number(po.total_cost_xof || 0),
+      notes: String(po.notes || ''), expectedDate: po.expected_date ? String(po.expected_date) : null,
+      receivedAt: po.received_at ? String(po.received_at) : null,
+      createdAt: String(po.created_at), updatedAt: String(po.updated_at || ''),
+      items: byOrder.get(String(po.id)) || [],
+    }));
+  }
+
+  async findPurchaseOrderById(poId: string, rid: string, executor: Knex | Knex.Transaction = this.db) {
+    const po = await executor('purchase_orders')
+      .select('id', 'po_number', 'supplier_name', 'status', 'total_cost_xof')
+      .where({ id: poId, restaurant_id: rid }).first();
+    if (!po) return null;
+    const items = await executor('purchase_order_items')
+      .select('id', 'stock_id', 'stock_name', 'unit', 'quantity', 'unit_cost_xof', 'line_total_xof')
+      .where({ purchase_order_id: poId });
+    return { po, items };
+  }
+
+  async createPurchaseOrder(
+    trx: Knex.Transaction,
+    params: {
+      id: string; rid: string; supplierName: string; status: string;
+      totalCostXof: number; notes: string; expectedDate: string | null;
+      userId: string; items: Array<{
+        id: string; stockId: string; stockName: string; unit: string;
+        quantity: number; unitCostXof: number; lineTotalXof: number;
+      }>;
+    },
+  ): Promise<{ poNumber: string; totalCostXof: number; status: string }> {
+    const restaurant = await trx('restaurants').select('id').where({ id: params.rid }).forUpdate().first();
+    if (!restaurant) throw new AppError(404, 'Établissement introuvable.');
+    const countRow = await trx('purchase_orders').where({ restaurant_id: params.rid }).count({ count: '*' }).first();
+    const poNumber = `PO-${1001 + Number(countRow?.count || 0)}`;
+    const now = new Date().toISOString();
+    await trx('purchase_orders').insert({
+      id: params.id, restaurant_id: params.rid, po_number: poNumber,
+      supplier_name: params.supplierName, status: params.status,
+      total_cost_xof: params.totalCostXof, notes: params.notes,
+      expected_date: params.expectedDate, created_by_user_id: params.userId,
+      created_at: now, updated_at: now,
+    });
+    if (params.items.length) {
+      await trx('purchase_order_items').insert(params.items.map((item) => ({
+        id: item.id, purchase_order_id: params.id, stock_id: item.stockId,
+        stock_name: item.stockName, unit: item.unit, quantity: item.quantity,
+        unit_cost_xof: item.unitCostXof, line_total_xof: item.lineTotalXof,
+      })));
+    }
+    return { poNumber, totalCostXof: params.totalCostXof, status: params.status };
+  }
+
+  async updatePurchaseOrderStatus(
+    trx: Knex.Transaction,
+    params: { poId: string; rid: string; status: 'ORDERED' | 'RECEIVED' | 'CANCELLED'; userId: string },
+  ): Promise<{ poNumber: string; supplierName: string }> {
+    const po = await trx('purchase_orders')
+      .where({ id: params.poId, restaurant_id: params.rid })
+      .forUpdate().first();
+    if (!po) throw new AppError(404, 'Bon de commande introuvable.');
+    if (po.status === 'RECEIVED' || po.status === 'CANCELLED') {
+      throw new AppError(409, 'Ce bon de commande est déjà clôturé.');
+    }
+    if (params.status === 'RECEIVED') {
+      const items = await trx('purchase_order_items')
+        .where({ purchase_order_id: params.poId });
+      for (const item of items) {
+        const stock = await trx('stocks')
+          .select('id', 'quantity', 'name')
+          .where({ id: item.stock_id, restaurant_id: params.rid })
+          .forUpdate().first();
+        if (!stock) throw new AppError(409, `L’ingrédient « ${String(item.stock_name)} » n’existe plus dans cet établissement.`);
+        const quantity = Number(item.quantity || 0);
+        const next = Math.round((Number(stock.quantity || 0) + quantity) * 1000) / 1000;
+        const updated = await trx('stocks')
+          .where({ id: item.stock_id, restaurant_id: params.rid })
+          .update({
+            quantity: next, updated_at: new Date().toISOString(),
+            ...(Number(item.unit_cost_xof || 0) > 0 ? { unit_cost_xof: Number(item.unit_cost_xof) } : {}),
+          });
+        if (updated !== 1) throw new AppError(409, 'Le stock a changé pendant la réception du bon de commande.');
+        await trx('stock_movements').insert({
+          id: this.id('smv'), restaurant_id: params.rid,
+          stock_id: String(item.stock_id), movement_type: 'PURCHASE',
+          quantity_delta: quantity,
+          reason: `Réception bon ${String(po.po_number)} (${String(po.supplier_name)})`,
+          waste_category: '', created_by_user_id: params.userId,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+    await trx('purchase_orders')
+      .where({ id: params.poId, restaurant_id: params.rid })
+      .update({
+        status: params.status,
+        received_at: params.status === 'RECEIVED' ? new Date().toISOString() : po.received_at,
+        updated_at: new Date().toISOString(),
+      });
+    return { poNumber: String(po.po_number), supplierName: String(po.supplier_name) };
+  }
+
   async deductStocksForOrderItems(
     trx: Knex.Transaction,
     params: {
