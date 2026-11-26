@@ -8,8 +8,18 @@ import { getKnex } from './knex.ts';
 import { hasPermission, resolveEffectivePermissions } from './rbac.ts';
 import type { Permission, RestaurantStatus, Role, UserStatus } from '../types/index.ts';
 
-const JWT_SECRET =
-  process.env.JWT_SECRET?.trim() || crypto.randomBytes(32).toString('hex');
+const configuredJwtSecret = process.env.JWT_SECRET?.trim();
+if (process.env.NODE_ENV === 'production' && !configuredJwtSecret) {
+  throw new Error('JWT_SECRET est obligatoire en production : configurez un secret stable d’au moins 32 octets.');
+}
+if (
+  process.env.NODE_ENV === 'production' &&
+  configuredJwtSecret &&
+  Buffer.byteLength(configuredJwtSecret, 'utf8') < 32
+) {
+  throw new Error('JWT_SECRET doit contenir au moins 32 octets en production.');
+}
+const JWT_SECRET = configuredJwtSecret || crypto.randomBytes(32).toString('hex');
 
 export interface AuthContext {
   sessionId: string;
@@ -157,7 +167,7 @@ export async function resolveAuthContextWithKnex(
     return resolveAuthContext(getDb(), token);
   }
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as {
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as {
       sessionId: string;
       userId: string;
     };
