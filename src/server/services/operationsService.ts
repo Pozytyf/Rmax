@@ -970,7 +970,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
     };
   }
 
-  createShift(auth: AuthContext, body: Record<string, unknown>) {
+  async createShift(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const userId = typeof body?.userId === 'string' ? body.userId.trim() : '';
     const shiftDate =
@@ -987,6 +987,13 @@ export class OperationsService extends BaseService<OperationsRepository> {
         : '';
     if (!userId || !shiftDate || !startTime || !endTime) {
       throw new AppError(400, 'Employé, date et horaires (début/fin) requis.');
+    }
+
+    if (usesPostgresRepositories()) {
+      return knexOperationsReadRepository.createShift({
+        restaurantId: rid, userId, shiftDate, startTime, endTime,
+        notes: String(body?.notes || '').slice(0, 200),
+      });
     }
 
     const db = getDb();
@@ -1024,11 +1031,13 @@ export class OperationsService extends BaseService<OperationsRepository> {
     return operationsRepository.findStaffShifts(rid).find((s) => s.id === id);
   }
 
-  deleteShift(auth: AuthContext, shiftId: string) {
+  async deleteShift(auth: AuthContext, shiftId: string) {
     const rid = auth.restaurantId!;
-    const changes = getDb()
-      .prepare('DELETE FROM staff_shifts WHERE id = ? AND restaurant_id = ?')
-      .run(shiftId, rid).changes;
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.deleteShift(rid, shiftId)
+      : getDb()
+          .prepare('DELETE FROM staff_shifts WHERE id = ? AND restaurant_id = ?')
+          .run(shiftId, rid).changes;
     if (!changes) throw new AppError(404, 'Créneau introuvable.');
   }
 

@@ -214,17 +214,17 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur chargement planning & pointages.');
     }
   },
-  createShift(req: Request, res: Response) {
+  async createShift(req: Request, res: Response) {
     try {
-      const shift = operationsService.createShift(req.auth!, req.body || {});
+      const shift = await operationsService.createShift(req.auth!, req.body || {});
       res.status(201).json({ shift });
     } catch (err) {
       handleControllerError(res, err, 'Erreur création créneau.');
     }
   },
-  deleteShift(req: Request, res: Response) {
+  async deleteShift(req: Request, res: Response) {
     try {
-      operationsService.deleteShift(req.auth!, String(req.params.id));
+      await operationsService.deleteShift(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression créneau.');
