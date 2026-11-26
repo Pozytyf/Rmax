@@ -1,6 +1,6 @@
 import QRCode from 'qrcode';
 import { getDb, generateId } from '../db.ts';
-import { recordAudit } from '../auth.ts';
+import { recordAudit, recordAuditWithKnex } from '../auth.ts';
 import {
   PublicRepository,
   publicRepository,
@@ -21,11 +21,12 @@ import {
   resolveLoyaltyForPhone,
 } from './pricingEngine.ts';
 import { broadcastOrderTrackerEvent, broadcastRestaurantEvent } from '../ws.ts';
-import { verifyPaydunyaIpnSignature } from './paydunyaService.ts';
+import { createPaydunyaOrderCheckout, confirmPaydunyaInvoice, verifyPaydunyaIpnSignature } from './paydunyaService.ts';
 import { knexPublicRepository } from '../repositories/publicRepository.knex.ts';
 import { getKnex } from '../knex.ts';
 import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
 import { BaseService } from './BaseService.ts';
+import { awardLoyaltyPointsOnPaidOrderKnex } from './pricingEngine.knex.ts';
 import { AppError } from './errors.ts';
 
 function isLegacyPublicTestRuntime(): boolean {
@@ -1145,13 +1146,134 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  payQrOrder(
+  private async createPublicOrderPaymentIntent(params: {
+    order: {
+      id: string; restaurant_id: string; order_number: string;
+      total_xof: number | string; paid_xof: number | string;
+      customer_phone?: string | null; restaurant_name: string;
+      status: string; restaurant_status: string; deleted_at?: string | null;
+      qr_status?: string;
+    };
+    body: Record<string, unknown>;
+    channel: 'QR' | 'STOREFRONT';
+    returnPath: string;
+  }) {
+    const method = String(params.body.method || '').toUpperCase();
+    if (!['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'].includes(method)) {
+      throw new AppError(400, 'Moyen de paiement mobile ou carte invalide.');
+    }
+    const order = params.order;
+    if (order.deleted_at || order.restaurant_status === 'SUSPENDED' || order.restaurant_status === 'DELETED') {
+      throw new AppError(403, 'Restaurant indisponible.');
+    }
+    if (order.status === 'CANCELLED') throw new AppError(400, 'Cette commande a été annulée.');
+    if (params.channel === 'QR' && order.qr_status !== 'ACTIVE') {
+      throw new AppError(410, 'Ce QR code a été révoqué.');
+    }
+
+    const idempotencyKey = String(params.body.idempotencyKey || '').trim();
+    if (!idempotencyKey || idempotencyKey.length > 128) {
+      throw new AppError(400, 'Une clé d’idempotence valide est obligatoire pour le paiement.');
+    }
+    const existing = await knexPublicRepository.findQrPaymentByIdempotencyKey(
+      order.restaurant_id, idempotencyKey,
+    );
+    if (existing) return { payment: existing, deduplicated: true };
+
+    const remaining = Number(order.total_xof) - Number(order.paid_xof);
+    if (remaining <= 0) throw new AppError(409, 'Cette commande est déjà intégralement réglée.');
+    const requestedAmount = params.channel === 'STOREFRONT'
+      ? remaining
+      : params.body.amountXof
+        ? Math.round(Number(params.body.amountXof))
+        : remaining;
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > remaining) {
+      throw new AppError(400, 'Montant de règlement invalide ou supérieur au solde restant.');
+    }
+
+    const phoneClean = normalizePhoneKey(String(
+      params.body.phoneNumber || params.body.customerPhone || order.customer_phone || '',
+    )).slice(0, 20);
+    if (method !== 'CARD' && phoneClean.length < 6) {
+      throw new AppError(400, 'Veuillez saisir votre numéro Mobile Money pour valider le paiement.');
+    }
+    if (!order.customer_phone && phoneClean.length >= 6) {
+      await knexPublicRepository.updateOrderCustomerPhone(order.id, order.restaurant_id, phoneClean);
+    }
+
+    const paymentId = generateId('pay');
+    const now = new Date().toISOString();
+    const reference = `RMX-${paymentId}`;
+    await knexPublicRepository.insertPendingPublicOrderPayment({
+      paymentId, restaurantId: order.restaurant_id, orderId: order.id,
+      amountXof: requestedAmount, method, mode: 'LIVE',
+      reference, idempotencyKey, now,
+    });
+
+    const configuredBase = process.env.APP_URL || process.env.PUBLIC_APP_URL ||
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
+    if (!configuredBase) {
+      await knexPublicRepository.markPendingPaymentFailed({
+        paymentId, restaurantId: order.restaurant_id,
+        reason: 'APP_URL/PUBLIC_APP_URL non configurée.', now: new Date().toISOString(),
+      });
+      throw new AppError(503, 'URL publique du site non configurée pour le paiement sécurisé.');
+    }
+
+    const baseUrl = configuredBase.replace(/\\/+$/, '');
+    const returnUrl = `${baseUrl}${params.returnPath}?payment=return`;
+    const cancelUrl = `${baseUrl}${params.returnPath}?payment=cancel`;
+    try {
+      const checkout = await createPaydunyaOrderCheckout({
+        paymentId, orderId: order.id, orderNumber: order.order_number,
+        restaurantId: order.restaurant_id, restaurantName: order.restaurant_name,
+        amountXof: requestedAmount, paymentMethod: method,
+        baseUrl, returnUrl, cancelUrl,
+      });
+      await knexPublicRepository.updatePaymentProviderDetails({
+        paymentId, restaurantId: order.restaurant_id,
+        providerReference: checkout.paydunyaToken,
+        checkoutUrl: checkout.checkoutUrl,
+        providerStatus: checkout.simulated ? 'SIMULATED' : 'CREATED',
+        payloadJson: JSON.stringify({
+          providerMode: checkout.providerMode, simulated: checkout.simulated,
+        }),
+        now: new Date().toISOString(),
+      });
+      return {
+        deduplicated: false,
+        simulated: checkout.simulated,
+        checkoutUrl: checkout.checkoutUrl,
+        payment: {
+          id: paymentId, orderId: order.id, amountXof: requestedAmount,
+          method, mode: checkout.mode, reference,
+          provider: 'PAYDUNYA', providerReference: checkout.paydunyaToken,
+          checkoutUrl: checkout.checkoutUrl, status: 'PENDING', createdAt: now,
+        },
+      };
+    } catch (err) {
+      await knexPublicRepository.markPendingPaymentFailed({
+        paymentId, restaurantId: order.restaurant_id,
+        reason: err instanceof Error ? err.message : String(err),
+        now: new Date().toISOString(),
+      });
+      throw new AppError(502, err instanceof Error ? err.message : 'Impossible de créer le paiement PayDunya.');
+    }
+  }
+
+  async payQrOrder(
     token: string,
     orderId: string,
     body: Record<string, unknown>,
   ) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new AppError(503, 'Le paiement en ligne est temporairement indisponible : la confirmation sécurisée du prestataire doit être activée avant toute validation.');
+    if (!isLegacyPublicTestRuntime()) {
+      const order = await knexPublicRepository.findOrderForQrPayment(token, orderId);
+      if (!order) throw new AppError(404, 'Commande introuvable pour cette table.');
+      return this.createPublicOrderPaymentIntent({
+        order: order as Parameters<PublicService['createPublicOrderPaymentIntent']>[0]['order'],
+        body, channel: 'QR',
+        returnPath: `/q/${encodeURIComponent(token)}/suivi/${encodeURIComponent(orderId)}`,
+      });
     }
     const method = String(body?.method || '').toUpperCase();
     const validMethods = ['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'];
@@ -1307,13 +1429,19 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  payStorefrontOrder(
+  async payStorefrontOrder(
     slug: string,
     orderId: string,
     body: Record<string, unknown>,
   ) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new AppError(503, 'Le paiement en ligne est temporairement indisponible : la confirmation sécurisée du prestataire doit être activée avant toute validation.');
+    if (!isLegacyPublicTestRuntime()) {
+      const order = await knexPublicRepository.findOrderForStorefrontPayment(slug, orderId);
+      if (!order) throw new AppError(404, 'Commande en ligne introuvable.');
+      return this.createPublicOrderPaymentIntent({
+        order: order as Parameters<PublicService['createPublicOrderPaymentIntent']>[0]['order'],
+        body, channel: 'STOREFRONT',
+        returnPath: `/c/${encodeURIComponent(slug)}/suivi/${encodeURIComponent(orderId)}`,
+      });
     }
     const method = String(body?.method || '').toUpperCase();
     const validMethods = ['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'];
