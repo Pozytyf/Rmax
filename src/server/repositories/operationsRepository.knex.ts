@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { Knex } from 'knex';
 import { getKnex } from '../knex.ts';
 import { mapPromotionRow } from '../services/pricingEngine.ts';
-import type { MenuCombo, Promotion } from '../../types/index.ts';
+import type { CustomerReview, MenuCombo, Promotion, TableCall } from '../../types/index.ts';
 
 export class KnexOperationsReadRepository {
   constructor(private readonly db: Knex = getKnex()) {}
@@ -121,6 +121,75 @@ export class KnexOperationsReadRepository {
 
   async deletePromotion(id: string, rid: string): Promise<number> {
     return this.db('promotions').where({ id, restaurant_id: rid }).del();
+  }
+
+  async findTableCalls(rid: string): Promise<TableCall[]> {
+    const rows = await this.db('table_calls')
+      .where({ restaurant_id: rid })
+      .orderByRaw("CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END")
+      .orderBy('created_at', 'desc')
+      .limit(50);
+    return rows.map((r) => ({
+      id: String(r.id), restaurantId: String(r.restaurant_id),
+      tableId: String(r.table_id), tableLabel: String(r.table_label),
+      callType: r.call_type === 'BILL' ? 'BILL' : 'WAITER',
+      note: String(r.note || ''),
+      status: r.status === 'ACKNOWLEDGED' ? 'ACKNOWLEDGED' : 'PENDING',
+      acknowledgedByName: r.acknowledged_by_name ? String(r.acknowledged_by_name) : null,
+      acknowledgedAt: r.acknowledged_at ? String(r.acknowledged_at) : null,
+      createdAt: String(r.created_at),
+    }));
+  }
+
+  async acknowledgeTableCall(id: string, rid: string, userName: string): Promise<number> {
+    return this.db('table_calls')
+      .where({ id, restaurant_id: rid })
+      .update({
+        status: 'ACKNOWLEDGED', acknowledged_by_name: userName,
+        acknowledged_at: new Date().toISOString(),
+      });
+  }
+
+  async findLoyaltyTransactions(rid: string, customerId: string) {
+    return this.db('loyalty_transactions')
+      .select({
+        id: 'id', restaurantId: 'restaurant_id', customerId: 'customer_id',
+        orderId: 'order_id', pointsDelta: 'points_delta',
+        reason: 'reason', createdAt: 'created_at',
+      })
+      .where({ restaurant_id: rid, customer_id: customerId })
+      .orderBy('created_at', 'desc')
+      .limit(50);
+  }
+
+  async findCustomerReviews(rid: string): Promise<CustomerReview[]> {
+    const rows = await this.db('customer_reviews')
+      .where({ restaurant_id: rid })
+      .orderBy('created_at', 'desc')
+      .limit(100);
+    return rows.map((r) => {
+      const rating = Number(r.rating);
+      return {
+        id: String(r.id), restaurantId: String(r.restaurant_id),
+        orderId: r.order_id ? String(r.order_id) : null,
+        orderNumber: String(r.order_number || ''),
+        tableLabel: String(r.table_label || ''),
+        customerName: String(r.customer_name || 'Client'), rating,
+        serviceRating: Number(r.service_rating || rating),
+        foodRating: Number(r.food_rating || rating),
+        speedRating: Number(r.speed_rating || rating),
+        waiterName: String(r.waiter_name || ''),
+        channel: String(r.channel || 'QR_ORDER'),
+        comment: String(r.comment || ''), reply: String(r.reply || ''),
+        createdAt: String(r.created_at),
+      };
+    });
+  }
+
+  async replyToReview(id: string, rid: string, reply: string): Promise<number> {
+    return this.db('customer_reviews')
+      .where({ id, restaurant_id: rid })
+      .update({ reply });
   }
 
   async findPromotions(rid: string): Promise<Promotion[]> {
