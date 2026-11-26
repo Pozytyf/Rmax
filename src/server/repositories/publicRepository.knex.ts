@@ -170,6 +170,12 @@ export class KnexPublicRepository {
       .first();
   }
 
+  async updateOrderCustomerPhone(orderId: string, restaurantId: string, phone: string) {
+    return this.db('orders')
+      .where({ id: orderId, restaurant_id: restaurantId })
+      .update({ customer_phone: phone, updated_at: new Date().toISOString() });
+  }
+
   async findQrPaymentByIdempotencyKey(restaurantId: string, idempotencyKey: string) {
     return this.db('payments')
       .select({
