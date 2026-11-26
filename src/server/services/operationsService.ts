@@ -327,8 +327,27 @@ export class OperationsService extends BaseService<OperationsRepository> {
     };
   }
 
-  openRegister(auth: AuthContext, body: Record<string, unknown>) {
+  async openRegister(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      const openingFloatXof = Math.max(0, Math.round(Number(body?.openingFloatXof || 0)));
+      const session = await getKnex().transaction(async (trx) => {
+        const created = await knexOperationsReadRepository.openRegisterSession(trx, {
+          rid, userId: auth.userId, userName: auth.fullName,
+          openingFloatXof, notes: String(body?.notes || '').slice(0, 300),
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'CASH_REGISTER_OPENED', targetType: 'CASH_REGISTER',
+          targetId: created.id,
+          details: `Fond de caisse initial : ${openingFloatXof} FCFA`,
+        });
+        return created;
+      });
+      broadcastRestaurantEvent(rid, 'register:updated', { status: 'OPEN', id: session.id });
+      return session;
+    }
     const existing = operationsRepository.findOpenRegister(rid);
     if (existing) {
       throw new AppError(
@@ -362,8 +381,50 @@ export class OperationsService extends BaseService<OperationsRepository> {
     return session;
   }
 
-  closeRegister(auth: AuthContext, body: Record<string, unknown>) {
+  async closeRegister(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      const countedCashXof = Math.max(0, Math.round(Number(body?.countedCashXof || 0)));
+      const countedMobileXof = Math.max(0, Math.round(Number(body?.countedMobileXof || 0)));
+      const countedCardXof = Math.max(0, Math.round(Number(body?.countedCardXof || 0)));
+      const report = await getKnex().transaction(async (trx) => {
+        const open = await knexOperationsReadRepository.findOpenRegisterForUpdate(trx, rid);
+        if (!open) throw new AppError(404, 'Aucune session de caisse ouverte à clôturer.');
+        const closedRow = await trx('cash_register_sessions')
+          .where({ restaurant_id: rid, status: 'CLOSED' })
+          .count({ c: '*' }).first();
+        const live = await knexOperationsReadRepository.computeRegisterLiveTotals(
+          rid, open.openedAt, open.openingFloatXof, trx,
+        );
+        const totalExpected = live.expectedCashXof + live.expectedMobileXof + live.expectedCardXof;
+        const totalCounted = countedCashXof + countedMobileXof + countedCardXof;
+        const varianceXof = totalCounted - totalExpected;
+        const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const zNumber = `Z-${ymd}-${String(Number(closedRow?.c || 0) + 1).padStart(3, '0')}`;
+        const closed = await knexOperationsReadRepository.closeRegisterSession(trx, {
+          id: open.id, rid, zNumber, userId: auth.userId, userName: auth.fullName,
+          expectedCashXof: live.expectedCashXof,
+          expectedMobileXof: live.expectedMobileXof,
+          expectedCardXof: live.expectedCardXof,
+          countedCashXof, countedMobileXof, countedCardXof,
+          varianceXof, totalSalesXof: live.totalSalesXof,
+          refundsXof: live.refundsXof, ordersCount: live.ordersCount,
+          notes: String(body?.notes || open.notes || '').slice(0, 500),
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'CASH_REGISTER_CLOSED', targetType: 'CASH_REGISTER',
+          targetId: closed.id,
+          details: `${zNumber} · Ventes ${live.totalSalesXof} FCFA · Écart ${varianceXof} FCFA`,
+        });
+        return { closed, zNumber };
+      });
+      broadcastRestaurantEvent(rid, 'register:updated', {
+        status: 'CLOSED', zNumber: report.zNumber, id: report.closed.id,
+      });
+      return report.closed;
+    }
     const open = operationsRepository.findOpenRegister(rid);
     if (!open) {
       throw new AppError(404, 'Aucune session de caisse ouverte à clôturer.');
