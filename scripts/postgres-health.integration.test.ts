@@ -410,6 +410,42 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
       ), 1);
     });
     assert.equal(String((await db('order_items').where({ order_id: orderId }).first())?.prep_status), 'PREPARING');
+    const paymentOneId = `it_pay_one_${suffix}`;
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.insertPaymentAndSettleOrder(trx, {
+        paymentId: paymentOneId, rid: restaurantId, orderId,
+        amountXof: 1000, method: 'CASH', mode: 'TEST',
+        reference: `IT-CASH-${suffix}`, idempotencyKey: `it-pay-key-${suffix}`,
+        userId, newPaid: 1000, fullyPaid: false,
+        tableId: String(diningTable.id), now,
+      }),
+    );
+    assert.equal((await knexRestaurantStockRepository.findPaymentByIdempotencyKey(
+      restaurantId, `it-pay-key-${suffix}`,
+    ))?.id, paymentOneId);
+    const paymentTwoId = `it_pay_two_${suffix}`;
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.insertPaymentAndSettleOrder(trx, {
+        paymentId: paymentTwoId, rid: restaurantId, orderId,
+        amountXof: 2200, method: 'WAVE', mode: 'TEST',
+        reference: `IT-WAVE-${suffix}`, idempotencyKey: null,
+        userId, newPaid: 3200, fullyPaid: true,
+        tableId: String(diningTable.id), now,
+      }),
+    );
+    assert.equal((await knexRestaurantStockRepository.findPayments(restaurantId)).filter((row) => row.orderId === orderId).length, 2);
+    await db.transaction(async (trx) => {
+      const payment = await knexRestaurantStockRepository.findPaymentForRefund(paymentOneId, restaurantId, trx);
+      assert.equal(Number(payment?.amount_xof), 1000);
+      await knexRestaurantStockRepository.markPaymentRefunded(
+        trx, paymentOneId, restaurantId, orderId, 1000,
+      );
+    });
+    assert.equal(String((await db('payments').where({ id: paymentOneId }).first())?.status), 'REFUNDED');
+    const settledOrder = await db('orders').where({ id: orderId, restaurant_id: restaurantId }).first();
+    assert.equal(Number(settledOrder?.paid_xof), 2200);
+    assert.equal(String(settledOrder?.status), 'SERVED');
+
 
     const register = await db.transaction((trx) =>
       knexOperationsReadRepository.openRegisterSession(trx, {
@@ -685,6 +721,7 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     await db('purchase_orders').where({ restaurant_id: restaurantId }).del();
     await db('notifications').where({ restaurant_id: restaurantId }).del();
     await db('stock_alert_settings').where({ restaurant_id: restaurantId }).del();
+    await db('payments').where({ restaurant_id: restaurantId }).del();
     await db('order_items').whereIn('order_id', db('orders').select('id').where({ restaurant_id: restaurantId })).del();
     await db('orders').where({ restaurant_id: restaurantId }).del();
     await db('b2b_invoices').where({ restaurant_id: restaurantId }).del();
