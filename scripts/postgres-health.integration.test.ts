@@ -30,6 +30,10 @@ test('selected PostgreSQL pool is reachable and schema is fully migrated', async
     'staff_time_clocks',
     'b2b_invoices',
   ];
+  assert.equal(await db.schema.hasColumn('stocks', 'stock_section'), true);
+  assert.equal(await db.schema.hasColumn('stock_movements', 'waste_category'), true);
+  assert.equal(await db.schema.hasColumn('users', 'pin_hash'), true);
+
   for (const table of requiredOperationsTables) {
     assert.equal(await db.schema.hasTable(table), true, `Missing PostgreSQL table: ${table}`);
     const rls = await db.raw(

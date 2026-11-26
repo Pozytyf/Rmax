@@ -5,6 +5,13 @@ import type { Knex } from 'knex';
  * de stock : classification cuisine/boissons et catégorie des pertes.
  */
 export async function up(knex: Knex): Promise<void> {
+  if (await knex.schema.hasTable('users')) {
+    if (!(await knex.schema.hasColumn('users', 'pin_hash'))) {
+      await knex.schema.alterTable('users', (table) => {
+        table.string('pin_hash');
+      });
+    }
+  }
   if (await knex.schema.hasTable('stocks')) {
     if (!(await knex.schema.hasColumn('stocks', 'stock_section'))) {
       await knex.schema.alterTable('stocks', (table) => {
