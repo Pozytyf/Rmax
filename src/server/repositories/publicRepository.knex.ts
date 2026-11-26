@@ -231,14 +231,18 @@ export class KnexPublicRepository {
     };
   }
 
-  async resolveLoyaltyForPhone(restaurantId: string, cleanPhone: string) {
+  async resolveLoyaltyForPhone(
+    restaurantId: string,
+    cleanPhone: string,
+    executor: Knex | Knex.Transaction = this.db,
+  ) {
     if (cleanPhone.length < 6) return null;
     const digitsTail = cleanPhone.replace(/\\D/g, '').slice(-8);
-    const resto = await this.db('restaurants')
+    const resto = await executor('restaurants')
       .select('loyalty_enabled', 'loyalty_points_per_1000_xof', 'loyalty_xof_per_point')
       .where({ id: restaurantId })
       .first();
-    const customer = await this.db('customers')
+    const customer = await executor('customers')
       .select('id', 'full_name', 'phone', 'loyalty_points', 'total_spent_xof', 'visits_count')
       .where('restaurant_id', restaurantId)
       .andWhere(function () {
