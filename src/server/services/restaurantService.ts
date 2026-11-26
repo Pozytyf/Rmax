@@ -1410,8 +1410,11 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     return result;
   }
 
-  getStocks(rid: string) {
-    return restaurantRepository.findStocksAndMovements(rid);
+  async getStocks(rid: string) {
+    this.ensureTenantId(rid);
+    return usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findStocksAndMovements(rid)
+      : restaurantRepository.findStocksAndMovements(rid);
   }
 
   private resolveStockAlertRecipients(
@@ -1555,6 +1558,23 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     const cleanThreshold = Math.max(0, Number(minThreshold ?? 5));
     const cleanSupplier = String(supplierName || '').trim().slice(0, 120);
 
+    if (usesPostgresRepositories()) {
+      const id = await knexRestaurantStockRepository.createStockItem({
+        rid, name: cleanName, unit: cleanUnit, stockSection: cleanSection,
+        quantity: cleanQty, minThreshold: cleanThreshold,
+        unitCostXof: Math.max(0, Math.round(Number(unitCostXof || 0))),
+        supplierName: cleanSupplier,
+      });
+      if (cleanQty <= cleanThreshold) {
+        await this.dispatchCriticalStockAlert({
+          auth, stockId: id, stockName: cleanName, quantity: cleanQty,
+          minThreshold: cleanThreshold, unit: cleanUnit, supplierName: cleanSupplier,
+        });
+      }
+      broadcastRestaurantEvent(rid, 'stock:updated', { stockId: id });
+      return id;
+    }
+
     const id = restaurantRepository.createStockItem({
       rid,
       name: cleanName,
@@ -1597,6 +1617,25 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       throw new AppError(400, 'Quantité invalide.');
     }
 
+    if (usesPostgresRepositories()) {
+      const result = await getKnex().transaction((trx) =>
+        knexRestaurantStockRepository.applyStockMovement(trx, {
+          rid, stockId, movementType: String(movementType) as 'IN' | 'OUT' | 'LOSS' | 'INVENTORY',
+          quantity: qty, reason: String(reason || '').trim(), userId: auth.userId,
+        }),
+      );
+      let alertTriggered = false;
+      if (result.quantity <= result.minThreshold && result.quantity !== result.previousQuantity) {
+        alertTriggered = true;
+        await this.dispatchCriticalStockAlert({
+          auth, stockId, stockName: result.stockName, quantity: result.quantity,
+          minThreshold: result.minThreshold, unit: result.unit, supplierName: result.supplierName,
+        });
+      }
+      broadcastRestaurantEvent(rid, 'stock:updated', { stockId, quantity: result.quantity });
+      return { quantity: result.quantity, alertTriggered };
+    }
+
     const stock = restaurantRepository.findStockById(stockId, rid);
     if (!stock) {
       throw new AppError(404, 'Article de stock introuvable.');
@@ -1608,7 +1647,8 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
         : movementType === 'INVENTORY'
           ? qty - stock.quantity
           : -qty;
-    const nextQty = Math.max(0, stock.quantity + delta);
+    if (stock.quantity + delta < 0) throw new AppError(409, 'Stock insuffisant pour ce mouvement.');
+    const nextQty = Math.round((stock.quantity + delta) * 1000) / 1000;
 
     restaurantRepository.applyStockMovement({
       rid,
@@ -1637,13 +1677,30 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     return { quantity: nextQty, alertTriggered };
   }
 
-  updateStockItem(rid: string, stockId: string, body: Record<string, unknown>) {
-    const existing = restaurantRepository.findStockById(stockId, rid);
-    if (!existing) {
-      throw new AppError(404, 'Ingrédient introuvable.');
+  async updateStockItem(rid: string, stockId: string, body: Record<string, unknown>) {
+    const { name, unit, stockSection, minThreshold, unitCostXof, supplierName } = body || {};
+    if (usesPostgresRepositories()) {
+      const existing = await knexRestaurantStockRepository.findStockById(stockId, rid);
+      if (!existing) throw new AppError(404, 'Ingrédient introuvable.');
+      let nextSection: 'KITCHEN' | 'BEVERAGE' | undefined;
+      if (stockSection !== undefined) {
+        const upper = String(stockSection).toUpperCase();
+        if (upper !== 'KITCHEN' && upper !== 'BEVERAGE') throw new AppError(400, 'Section de stock invalide (KITCHEN ou BEVERAGE).');
+        nextSection = upper === 'BEVERAGE' ? 'BEVERAGE' : 'KITCHEN';
+      }
+      await getKnex().transaction((trx) => knexRestaurantStockRepository.updateStockItem(stockId, rid, {
+        name: typeof name === 'string' ? name.trim().slice(0, 120) : undefined,
+        unit: typeof unit === 'string' && unit.trim() ? unit.trim().slice(0, 24) : undefined,
+        stockSection: nextSection,
+        minThreshold: minThreshold !== undefined && Number.isFinite(Number(minThreshold)) ? Math.max(0, Number(minThreshold)) : undefined,
+        unitCostXof: unitCostXof !== undefined && Number.isFinite(Number(unitCostXof)) ? Math.max(0, Math.round(Number(unitCostXof))) : undefined,
+        supplierName: typeof supplierName === 'string' ? supplierName.trim().slice(0, 120) : undefined,
+      }, trx));
+      broadcastRestaurantEvent(rid, 'stock:updated', { stockId });
+      return;
     }
-    const { name, unit, stockSection, minThreshold, unitCostXof, supplierName } =
-      body || {};
+    const existing = restaurantRepository.findStockById(stockId, rid);
+    if (!existing) throw new AppError(404, 'Ingrédient introuvable.');
     if (name !== undefined && (typeof name !== 'string' || name.trim().length < 2)) {
       throw new AppError(400, 'Nom d’ingrédient invalide.');
     }
@@ -1678,8 +1735,23 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'stock:updated', { stockId });
   }
 
-  deleteStockItem(auth: AuthContext, stockId: string) {
+  async deleteStockItem(auth: AuthContext, stockId: string) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const existing = await knexRestaurantStockRepository.findStockById(stockId, rid, trx);
+        if (!existing) throw new AppError(404, 'Ingrédient introuvable.');
+        await knexRestaurantStockRepository.deleteStockItem(trx, stockId, rid);
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'STOCK_DELETED', targetType: 'STOCK',
+          targetId: stockId, details: String(existing.name),
+        });
+      });
+      broadcastRestaurantEvent(rid, 'stock:updated', { stockId });
+      return;
+    }
     const existing = restaurantRepository.findStockById(stockId, rid);
     if (!existing) {
       throw new AppError(404, 'Ingrédient introuvable.');
