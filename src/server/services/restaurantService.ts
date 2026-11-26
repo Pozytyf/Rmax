@@ -1690,6 +1690,9 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
 
   async updateStockItem(rid: string, stockId: string, body: Record<string, unknown>) {
     const { name, unit, stockSection, minThreshold, unitCostXof, supplierName } = body || {};
+    if (name !== undefined && (typeof name !== 'string' || name.trim().length < 2)) {
+      throw new AppError(400, 'Nom d’ingrédient invalide.');
+    }
     if (usesPostgresRepositories()) {
       const existing = await knexRestaurantStockRepository.findStockById(stockId, rid);
       if (!existing) throw new AppError(404, 'Ingrédient introuvable.');
