@@ -697,30 +697,50 @@ RETURNS TEXT
 LANGUAGE sql
 STABLE
 SET search_path = pg_catalog
-AS $
+AS $function$
   SELECT NULLIF(COALESCE(
     auth.jwt() ->> 'restaurant_id',
     auth.jwt() -> 'app_metadata' ->> 'restaurant_id',
     ''
   ), '');
-$$;
+$function$;
 
 CREATE OR REPLACE FUNCTION public.is_superadmin()
 RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
 SET search_path = pg_catalog
-AS $
+AS $function$
   SELECT COALESCE(
     auth.jwt() ->> 'global_role',
     auth.jwt() -> 'app_metadata' ->> 'global_role',
     ''
   ) = 'SUPER_ADMIN';
-$$;
+$function$;
 
 -- Activation RLS sur les tables métier
 ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_self_access_restaurants ON public.restaurants;
+CREATE POLICY tenant_self_access_restaurants ON public.restaurants
+FOR ALL USING (public.is_superadmin() OR id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR id = public.current_tenant_id());
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.restaurants TO authenticated, service_role;
+REVOKE ALL ON TABLE public.restaurants FROM anon;
+
 ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_self_access_tenants ON public.tenants;
+CREATE POLICY tenant_self_access_tenants ON public.tenants
+FOR ALL USING (public.is_superadmin() OR id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR id = public.current_tenant_id());
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.tenants TO authenticated, service_role;
+REVOKE ALL ON TABLE public.tenants FROM anon;
+
+ALTER TABLE public.plans ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS plans_public_read ON public.plans;
+CREATE POLICY plans_public_read ON public.plans FOR SELECT USING (active = 1);
+GRANT SELECT ON TABLE public.plans TO anon, authenticated, service_role;
+GRANT INSERT, UPDATE, DELETE ON TABLE public.plans TO authenticated, service_role;
+
 ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_subscriptions ON public.subscriptions;
 CREATE POLICY tenant_isolation_subscriptions ON public.subscriptions
@@ -813,7 +833,7 @@ REVOKE ALL ON TABLE public.knex_migrations_lock FROM anon, authenticated;
 
 -- Explicit deny policies for sensitive/internal tables. These tables are only
 -- accessed by the trusted server-side database connection, never by Data API roles.
-DO $
+DO $block$
 DECLARE
   tbl TEXT;
 BEGIN
@@ -835,17 +855,17 @@ BEGIN
     EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon, authenticated', tbl);
   END LOOP;
 END
-$;
+$block$;
 
 -- Keep the internal RLS DDL event-trigger function off the public RPC surface.
-DO $
+DO $block$
 BEGIN
   IF to_regprocedure('public.rls_auto_enable()') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM PUBLIC';
     EXECUTE 'REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM anon, authenticated';
   END IF;
 END
-$;
+$block$;
 
 -- Supabase Realtime Publication (temps réel KDS, Salle & Suivi QR sur Vercel)
 -- ============================================================================
