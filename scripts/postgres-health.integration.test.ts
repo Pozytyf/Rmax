@@ -193,6 +193,7 @@ test('PostgreSQL public catalog and order tracking reads are tenant/table scoped
   const now = new Date().toISOString();
   const future = new Date(Date.now() + 60_000).toISOString();
   let tableId = '';
+  let tableCallId = '';
 
   try {
     const plan = await knexAuthRepository.findPlanForRegistration('ESSENTIEL');
@@ -269,12 +270,31 @@ test('PostgreSQL public catalog and order tracking reads are tenant/table scoped
     const trackedQr = await knexPublicRepository.findTrackedQrOrder(qrToken, orderId);
     assert.equal(trackedQr?.order.id, orderId);
     assert.equal(trackedQr?.items.length, 1);
+
+    const call = await knexPublicRepository.createTableCall({
+      restaurantId, tableId, tableLabel: String(table.label),
+      callType: 'WAITER', note: `Integration table call ${suffix}`,
+    });
+    tableCallId = call.id;
+    assert.ok(await db('table_calls').where({ id: tableCallId }).first());
+    assert.ok(await db('notifications').where({ restaurant_id: restaurantId, message: call.note }).first());
+
+    const review = await knexPublicRepository.insertCustomerReview({
+      restaurantId, orderId, orderNumber: `IT-${suffix}-1`,
+      tableLabel: String(table.label), customerName: 'Test Guest',
+      rating: 5, serviceRating: 5, foodRating: 4, speedRating: 5,
+      waiterName: 'Test Waiter', channel: 'QR_ORDER', comment: 'Test review',
+    });
+    assert.ok(review.id);
+    const trackedQrWithReview = await knexPublicRepository.findTrackedQrOrder(qrToken, orderId);
+    assert.equal(trackedQrWithReview?.review?.id, review.id);
+
     const trackedStorefront = await knexPublicRepository.findTrackedStorefrontOrder(slug, storefrontOrderId);
     assert.equal(trackedStorefront?.order.id, storefrontOrderId);
 
     assert.equal(await knexPublicRepository.countOrdersForRestaurant(restaurantId), 2);
     assert.equal((await knexPublicRepository.findOrderByIdempotencyKey(restaurantId, `it-${suffix}`))?.id, orderId);
-    assert.equal((await knexPublicRepository.findPublicRatingStats(restaurantId)).total, 0);
+    assert.equal((await knexPublicRepository.findPublicRatingStats(restaurantId)).total, 1);
 
     const leadId = await knexPublicRepository.createLead({
       leadType: 'CONTACT', fullName: 'Test Lead', email,
@@ -285,6 +305,9 @@ test('PostgreSQL public catalog and order tracking reads are tenant/table scoped
   } finally {
     await db('contact_leads').where({ email }).del();
     await db('qr_table_sessions').where({ restaurant_id: restaurantId }).del();
+    await db('table_calls').where({ restaurant_id: restaurantId }).del();
+    await db('notifications').where({ restaurant_id: restaurantId, message: `Integration table call ${suffix}` }).del();
+    await db('customer_reviews').where({ order_id: orderId }).del();
     await db('order_items').whereIn('order_id', [orderId, storefrontOrderId]).del();
     await db('orders').where({ restaurant_id: restaurantId }).del();
     await db('menu_items').where({ id: menuItemId }).del();
