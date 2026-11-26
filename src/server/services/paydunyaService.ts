@@ -105,6 +105,9 @@ export async function createPaydunyaSubscriptionCheckout(
   input: PaydunyaInvoiceInitInput,
 ): Promise<PaydunyaInvoiceInitResult> {
   const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    throw new Error('PAYDUNYA_MODE=LIVE est obligatoire pour encaisser un abonnement en production.');
+  }
 
   if (!creds.configured) {
     if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
@@ -205,6 +208,9 @@ export async function createPaydunyaOrderCheckout(
   input: PaydunyaOrderCheckoutInput,
 ): Promise<PaydunyaInvoiceInitResult> {
   const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    return { completed: false, status: 'failed', providerMessage: 'Le mode PayDunya LIVE est obligatoire en production.' };
+  }
   if (!creds.configured) {
     if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
       throw new Error('Configuration PayDunya absente : les paiements réels sont désactivés.');
@@ -366,6 +372,7 @@ export function verifyPaydunyaIpnSignature(
   rawHeaderSig?: string,
 ): boolean {
   const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') return false;
   const dataObj =
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)
