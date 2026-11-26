@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { Knex } from 'knex';
 import { getKnex } from '../knex.ts';
 import { mapPromotionRow } from '../services/pricingEngine.ts';
-import type { B2bInvoice, CustomerReview, MenuCombo, Promotion, StaffShift, StaffTimeClock, TableCall } from '../../types/index.ts';
+import type { B2bInvoice, CustomerReview, InventoryCount, MenuCombo, Promotion, StaffShift, StaffTimeClock, TableCall } from '../../types/index.ts';
 
 export class KnexOperationsReadRepository {
   constructor(private readonly db: Knex = getKnex()) {}
@@ -190,6 +190,61 @@ export class KnexOperationsReadRepository {
     return this.db('customer_reviews')
       .where({ id, restaurant_id: rid })
       .update({ reply });
+  }
+
+  async findInventoryCounts(rid: string): Promise<InventoryCount[]> {
+    const headers = await this.db('inventory_counts')
+      .where({ restaurant_id: rid })
+      .orderBy('created_at', 'desc')
+      .limit(30);
+    if (!headers.length) return [];
+    const headerIds = headers.map((row) => String(row.id));
+    const lineRows = await this.db('inventory_count_lines as l')
+      .join('inventory_counts as h', 'h.id', 'l.inventory_count_id')
+      .leftJoin('stocks as s', function () {
+        this.on('s.id', '=', 'l.stock_id')
+          .andOn('s.restaurant_id', '=', 'h.restaurant_id');
+      })
+      .select({
+        id: 'l.id', inventoryCountId: 'l.inventory_count_id',
+        stockId: 'l.stock_id', stockName: 'l.stock_name',
+        stockSection: 's.stock_section', unit: 'l.unit',
+        expectedQty: 'l.expected_qty', countedQty: 'l.counted_qty',
+        varianceQty: 'l.variance_qty', unitCostXof: 'l.unit_cost_xof',
+        varianceXof: 'l.variance_xof',
+      })
+      .where('h.restaurant_id', rid)
+      .whereIn('l.inventory_count_id', headerIds)
+      .orderBy('l.stock_name', 'asc');
+    const byHeader = new Map<string, InventoryCount['lines']>();
+    for (const row of lineRows) {
+      const key = String(row.inventoryCountId);
+      const list = byHeader.get(key) || [];
+      list.push({
+        id: String(row.id), inventoryCountId: key,
+        stockId: String(row.stockId), stockName: String(row.stockName),
+        stockSection: row.stockSection === 'BEVERAGE' ? 'BEVERAGE' : 'KITCHEN',
+        unit: String(row.unit), expectedQty: Number(row.expectedQty || 0),
+        countedQty: Number(row.countedQty || 0),
+        varianceQty: Number(row.varianceQty || 0),
+        unitCostXof: Number(row.unitCostXof || 0),
+        varianceXof: Number(row.varianceXof || 0),
+      });
+      byHeader.set(key, list);
+    }
+    return headers.map((h) => ({
+      id: String(h.id), restaurantId: String(h.restaurant_id),
+      title: String(h.title),
+      stockSection: h.stock_section === 'KITCHEN' || h.stock_section === 'BEVERAGE'
+        ? h.stock_section : 'ALL',
+      status: 'VALIDATED',
+      notes: String(h.notes || ''),
+      totalVarianceXof: Number(h.total_variance_xof || 0),
+      createdByName: String(h.created_by_name || ''),
+      validatedAt: h.validated_at ? String(h.validated_at) : null,
+      createdAt: String(h.created_at),
+      lines: byHeader.get(String(h.id)) || [],
+    }));
   }
 
   async findStaffShifts(rid: string): Promise<StaffShift[]> {
