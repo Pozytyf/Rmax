@@ -283,6 +283,14 @@ function runMigrations(db: SqliteDatabase): void {
       order_type TEXT NOT NULL,
       table_id TEXT REFERENCES dining_tables(id),
       customer_name TEXT NOT NULL DEFAULT 'Client comptoir',
+      customer_phone TEXT,
+      delivery_address TEXT,
+      delivery_zone TEXT,
+      delivery_fee_xof INTEGER NOT NULL DEFAULT 0,
+      scheduled_slot TEXT,
+      promo_code TEXT,
+      loyalty_points_used INTEGER NOT NULL DEFAULT 0,
+      loyalty_points_earned INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'PENDING',
       subtotal_xof INTEGER NOT NULL,
       discount_xof INTEGER NOT NULL DEFAULT 0,
@@ -1039,6 +1047,26 @@ function runMigrations(db: SqliteDatabase): void {
       throw err;
     } finally {
       db.exec('PRAGMA foreign_keys = ON;');
+    }
+  }
+
+  // Additive compatibility migration for existing local SQLite databases.
+  const existingOrderColumns = new Set(
+    (db.pragma('table_info(orders)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  const missingOrderColumns: Array<[string, string]> = [
+    ['customer_phone', 'TEXT'],
+    ['delivery_address', 'TEXT'],
+    ['delivery_zone', 'TEXT'],
+    ['delivery_fee_xof', 'INTEGER NOT NULL DEFAULT 0'],
+    ['scheduled_slot', 'TEXT'],
+    ['promo_code', 'TEXT'],
+    ['loyalty_points_used', 'INTEGER NOT NULL DEFAULT 0'],
+    ['loyalty_points_earned', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [column, definition] of missingOrderColumns) {
+    if (!existingOrderColumns.has(column)) {
+      db.exec(`ALTER TABLE orders ADD COLUMN ${column} ${definition}`);
     }
   }
 

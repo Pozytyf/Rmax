@@ -189,6 +189,14 @@ export async function up(knex: Knex): Promise<void> {
       t.string('order_type').notNullable();
       t.string('table_id');
       t.string('customer_name').notNullable().defaultTo('Client comptoir');
+      t.string('customer_phone');
+      t.text('delivery_address');
+      t.string('delivery_zone');
+      t.integer('delivery_fee_xof').notNullable().defaultTo(0);
+      t.string('scheduled_slot');
+      t.string('promo_code');
+      t.integer('loyalty_points_used').notNullable().defaultTo(0);
+      t.integer('loyalty_points_earned').notNullable().defaultTo(0);
       t.string('status').notNullable().defaultTo('PENDING');
       t.integer('subtotal_xof').notNullable();
       t.integer('discount_xof').notNullable().defaultTo(0);
