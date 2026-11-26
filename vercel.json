@@ -11,8 +11,7 @@
     "DATABASE_SSL": "true",
     "PAYDUNYA_MODE": "LIVE",
     "DB_POOL_MIN": "0",
-    "DB_POOL_MAX": "5",
-    "PAYMENT_MODE": "TEST"
+    "DB_POOL_MAX": "5"
   },
   "functions": {
     "api/index.ts": {
