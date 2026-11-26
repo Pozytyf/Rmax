@@ -600,6 +600,93 @@ export class KnexRestaurantStockRepository {
     return { poNumber: String(po.po_number), supplierName: String(po.supplier_name) };
   }
 
+  async findOrderByIdempotencyKey(rid: string, key: string, executor: Knex | Knex.Transaction = this.db) {
+    return executor('orders')
+      .select('id', 'order_number', 'total_xof')
+      .where({ restaurant_id: rid, idempotency_key: key }).first();
+  }
+
+  async findRestaurantTaxAndMode(rid: string, executor: Knex | Knex.Transaction = this.db) {
+    return executor('restaurants')
+      .select('tax_rate_percent', 'paydunya_mode')
+      .where({ id: rid }).first();
+  }
+
+  async findTableById(tableId: string, rid: string, executor: Knex | Knex.Transaction = this.db) {
+    return executor('dining_tables')
+      .select('id', 'label', 'status')
+      .where({ id: tableId, restaurant_id: rid }).first();
+  }
+
+  async countOrders(rid: string, executor: Knex | Knex.Transaction = this.db): Promise<number> {
+    const row = await executor('orders').where({ restaurant_id: rid }).count({ count: '*' }).first();
+    return Number(row?.count || 0);
+  }
+
+  async findMenuItemWithStation(menuItemId: string, rid: string, executor: Knex | Knex.Transaction = this.db) {
+    return executor('menu_items as m')
+      .join('menu_categories as c', function () {
+        this.on('c.id', '=', 'm.category_id').andOn('c.restaurant_id', '=', 'm.restaurant_id');
+      })
+      .select({
+        id: 'm.id', category_id: 'm.category_id', name: 'm.name',
+        price_xof: 'm.price_xof', available: 'm.available',
+        options_json: 'm.options_json', option_groups_json: 'm.option_groups_json',
+        station: 'c.station',
+      })
+      .where('m.id', menuItemId)
+      .where('m.restaurant_id', rid)
+      .first();
+  }
+
+  async insertPosOrder(trx: Knex.Transaction, params: {
+    orderId: string; rid: string; orderNumber: string; orderType: string;
+    tableId: string | null; customerName: string; customerPhone?: string;
+    deliveryAddress?: string; deliveryZone?: string; deliveryFeeXof?: number;
+    scheduledSlot?: string; promoCode?: string; loyaltyPointsUsed?: number;
+    subtotalXof: number; discountXof: number; taxXof: number; totalXof: number;
+    notes: string; idempotencyKey: string | null; userId: string; now: string;
+    lines: Array<{
+      id: string; menuItemId: string; name: string; station: string;
+      unitPriceXof: number; optionsSummary: string; optionsDeltaXof: number;
+      quantity: number; lineTotalXof: number; notes: string;
+    }>;
+  }): Promise<void> {
+    await trx('orders').insert({
+      id: params.orderId, restaurant_id: params.rid,
+      order_number: params.orderNumber, order_type: params.orderType,
+      table_id: params.tableId, customer_name: params.customerName,
+      customer_phone: params.customerPhone || '',
+      delivery_address: params.deliveryAddress || '',
+      delivery_zone: params.deliveryZone || '',
+      delivery_fee_xof: params.deliveryFeeXof || 0,
+      scheduled_slot: params.scheduledSlot || '',
+      promo_code: params.promoCode || '',
+      loyalty_points_used: params.loyaltyPointsUsed || 0,
+      status: 'PENDING', subtotal_xof: params.subtotalXof,
+      discount_xof: params.discountXof, tax_xof: params.taxXof,
+      total_xof: params.totalXof, paid_xof: 0, notes: params.notes,
+      idempotency_key: params.idempotencyKey,
+      created_by_user_id: params.userId, created_at: params.now, updated_at: params.now,
+    });
+    if (params.lines.length) {
+      await trx('order_items').insert(params.lines.map((line) => ({
+        id: line.id, order_id: params.orderId, menu_item_id: line.menuItemId,
+        name: line.name, station: line.station, unit_price_xof: line.unitPriceXof,
+        options_summary: line.optionsSummary, options_delta_xof: line.optionsDeltaXof,
+        quantity: line.quantity, line_total_xof: line.lineTotalXof,
+        notes: line.notes, prep_status: 'PENDING',
+      })));
+    }
+    if (params.tableId) {
+      const updated = await trx('dining_tables')
+        .where({ id: params.tableId, restaurant_id: params.rid })
+        .whereIn('status', ['AVAILABLE', 'RESERVED', 'OCCUPIED'])
+        .update({ status: 'OCCUPIED' });
+      if (updated !== 1) throw new AppError(409, 'La table a changé d’état. Actualisez puis réessayez.');
+    }
+  }
+
   async findOrdersWithItems(rid: string) {
     const orders = await this.db('orders as o')
       .leftJoin('dining_tables as t', function () {
@@ -655,7 +742,7 @@ export class KnexRestaurantStockRepository {
     }));
   }
 
-  async findOrderForUpdate(orderId: string, rid: string, trx: Knex.Transaction = this.db as Knex.Transaction) {
+  async findOrderForUpdate(orderId: string, rid: string, trx: Knex | Knex.Transaction = this.db) {
     return trx('orders')
       .select('id', 'table_id', 'total_xof', 'paid_xof', 'status')
       .where({ id: orderId, restaurant_id: rid })
