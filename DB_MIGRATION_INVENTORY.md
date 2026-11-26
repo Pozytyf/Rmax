@@ -47,10 +47,11 @@ Les parcours suivants ont maintenant une implémentation Knex et sont sélection
 - Appels de table : lecture et acquittement tenant-scopés.
 - Fidélité : historique et ajustement transactionnel avec verrouillage `FOR UPDATE`, journal de mouvement et audit dans la même transaction.
 - Avis clients : lecture et réponse tenant-scopée.
-- Inventaires : lecture des en-têtes et lignes avec jointure des stocks bornée au restaurant.
-- Planning et pointages : lectures des horaires et des temps de présence, création et suppression des créneaux.
+- Inventaires : lecture des en-têtes et lignes, validation atomique des comptages et ajustement du stock dans une transaction tenant-scopée.
+- Planning et pointages : lectures des horaires et temps de présence, création/suppression des créneaux et pointage PIN transactionnel sérialisé par utilisateur.
 - Caisse : lecture des rapports, ouverture et clôture transactionnelles ; verrouillage de la ligne restaurant à l'ouverture et de la session à la clôture.
-- Factures B2B : lecture tenant-scopée.
+- Factures B2B : lecture, création, mise à jour du statut et conversion proforma/facture, avec numérotation par établissement et transactions.
+- Multi-sites : création transactionnelle d'un établissement (tenant, restaurant, membership, abonnement, catégories, tables et QR), et indicateurs consolidés par établissement.
 - Paramètres de plateforme : lecture et upsert PostgreSQL, avec audit dans la même transaction.
 
 Corrections de revue associées :
