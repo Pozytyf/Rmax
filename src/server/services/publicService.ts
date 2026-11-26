@@ -23,6 +23,7 @@ import {
 import { broadcastOrderTrackerEvent, broadcastRestaurantEvent } from '../ws.ts';
 import { verifyPaydunyaIpnSignature } from './paydunyaService.ts';
 import { knexPublicRepository } from '../repositories/publicRepository.knex.ts';
+import { getKnex } from '../knex.ts';
 import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
 import { BaseService } from './BaseService.ts';
 import { AppError } from './errors.ts';
@@ -354,13 +355,14 @@ export class PublicService extends BaseService<PublicRepository> {
     return info;
   }
 
-  private buildPublicOrderLines(params: {
+  private async buildPublicOrderLines(params: {
     restaurantId: string;
     rawItems: unknown[];
     rawCombos: unknown[];
   }) {
-    const db = getDb();
-    const activePromos = loadActivePromotions(db, params.restaurantId);
+    const activePromos = isLegacyPublicTestRuntime()
+      ? loadActivePromotions(getDb(), params.restaurantId)
+      : (await knexOperationsReadRepository.findPromotions(params.restaurantId)).filter((promo) => promo.active);
     let grossXof = 0;
     const preparedLines: Array<{
       id: string;
@@ -399,7 +401,7 @@ export class PublicService extends BaseService<PublicRepository> {
         throw new AppError(400, 'Quantité d’article invalide.');
       }
       const qty = Math.max(1, Math.min(50, Math.floor(parsedQty)));
-      const menuItem = publicRepository.findMenuItemWithStation(
+      const menuItem = await publicReadRepository.findMenuItemWithStation(
         String(line.menuItemId),
         params.restaurantId,
       );
@@ -448,9 +450,9 @@ export class PublicService extends BaseService<PublicRepository> {
     }
 
     if (combosQueue.length > 0) {
-      const fallbackItem = db
-        .prepare('SELECT id FROM menu_items WHERE restaurant_id = ? LIMIT 1')
-        .get(params.restaurantId) as { id: string } | undefined;
+      const fallbackItem = isLegacyPublicTestRuntime()
+        ? getDb().prepare('SELECT id FROM menu_items WHERE restaurant_id = ? LIMIT 1').get(params.restaurantId) as { id: string } | undefined
+        : await getKnex()('menu_items').select('id').where({ restaurant_id: params.restaurantId }).first() as { id: string } | undefined;
 
       for (const rawCombo of combosQueue) {
         const cObj = (rawCombo || {}) as {
@@ -458,10 +460,9 @@ export class PublicService extends BaseService<PublicRepository> {
           quantity?: unknown;
           notes?: unknown;
         };
-        const combo = operationsRepository.findComboById(
-          String(cObj.comboId || ''),
-          params.restaurantId,
-        );
+        const combo = isLegacyPublicTestRuntime()
+          ? operationsRepository.findComboById(String(cObj.comboId || ''), params.restaurantId)
+          : await knexOperationsReadRepository.findComboById(String(cObj.comboId || ''), params.restaurantId);
         if (!combo || !combo.active) {
           throw new AppError(400, 'Une formule sélectionnée n’est plus disponible.');
         }
@@ -606,7 +607,7 @@ export class PublicService extends BaseService<PublicRepository> {
       db.exec('BEGIN IMMEDIATE');
 
       const { grossXof, preparedLines, recipeDeductItems } =
-        this.buildPublicOrderLines({
+        await this.buildPublicOrderLines({
           restaurantId,
           rawItems,
           rawCombos,
