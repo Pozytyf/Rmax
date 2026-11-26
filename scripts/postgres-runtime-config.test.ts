@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildKnexConfig, buildPostgresKnexConfig } from '../server/db/knexfile.ts';
+import { buildKnexConfig, buildPostgresKnexConfig } from '../src/server/db/knexfile.ts';
 
 test('PostgreSQL configuration fails closed when the connection URL is missing', () => {
   const previous = {
