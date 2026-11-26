@@ -483,10 +483,10 @@ export const restaurantController = {
     }
   },
 
-  posPinSwitch(req: Request, res: Response) {
+  async posPinSwitch(req: Request, res: Response) {
     try {
       const userAgent = String(req.headers['user-agent'] || '');
-      const result = authService.pinLogin(
+      const result = await authService.pinLogin(
         req.body || {},
         userAgent,
         req.auth!.restaurantId!,
