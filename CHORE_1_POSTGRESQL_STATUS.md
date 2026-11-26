@@ -69,6 +69,9 @@ Le relevé statique initial comptait 281 appels `getDb()`, 435 appels `.prepare(
 6. Tester persistance après redémarrage, multi-instance, concurrence, intégrité et restauration.
 7. Mettre en place une authentification Realtime Supabase fiable avant d'ajouter des policies RLS permettant l'accès du navigateur.
 
+### État des migrations sur le projet Supabase réel
+Sur `RestoMax V1`, `knex_migrations` contient toujours uniquement les migrations 001 à 006. Les migrations Knex 007 à 009 et 015 sont en attente dans le dépôt. Je ne les ai pas forcées sur le projet réel : elles doivent être exécutées par un job de release contrôlé, après validation de la migration des repositories et du plan de données. Le runtime de cette branche refusera correctement de démarrer tant que ces migrations Knex ne seront pas appliquées. Les migrations SQL Supabase 010 à 015 sont un flux distinct et ont été appliquées pour le durcissement RLS/schéma.
+
 ### Sécurité Supabase — état après correction
 - 46 politiques RLS sur 46 tables publiques.
 - Advisor Supabase sécurité : aucun finding.
