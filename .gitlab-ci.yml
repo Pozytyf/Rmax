@@ -58,6 +58,7 @@ postgres-migrations:
     - bun run src/server/migrate.ts status
     - bun run src/server/migrate.ts rollback
     - bun run src/server/migrate.ts latest
+    - bun run test:supabase-sql
     - bun test scripts/postgres-health.integration.test.ts
 
 production-build:

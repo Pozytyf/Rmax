@@ -16,7 +16,8 @@
     "migrate:rollback": "tsx src/server/migrate.ts rollback",
     "test:e2e": "playwright test",
     "test:postgres-config": "bun test src/tests/postgres-runtime-config.test.ts src/tests/postgres-migration-gate.test.ts",
-    "test:all": "bun test src/tests src/server/tests"
+    "test:all": "bun test src/tests src/server/tests",
+    "test:supabase-sql": "bun run scripts/test-supabase-sql-migrations.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
