@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { parseCookieHeader, resolveAuthContextWithKnex } from './auth.ts';
 import { getKnex } from './knex.ts';
+import { getDb } from './db.ts';
 
 interface ClientMeta {
   ws: WebSocket;
@@ -70,28 +71,61 @@ export function handleIncomingClusterEnvelope(envelope: ClusterEnvelope): void {
 async function authorizeWebSocketRoom(
   room: string,
   token: string | null,
+  qrToken: string | null,
 ): Promise<boolean> {
-  if (!token) return false;
+  const auth = token ? await resolveAuthContextWithKnex(token) : null;
 
-  const auth = await resolveAuthContextWithKnex(token);
-  if (!auth) return false;
-
-  if (room === 'superadmin') return auth.role === 'SUPER_ADMIN';
+  if (room === 'superadmin') return auth?.role === 'SUPER_ADMIN';
 
   if (room.startsWith('restaurant:')) {
     const targetRid = room.slice('restaurant:'.length);
-    return Boolean(targetRid) && (auth.role === 'SUPER_ADMIN' || auth.restaurantId === targetRid);
+    return Boolean(auth && targetRid) &&
+      (auth?.role === 'SUPER_ADMIN' || auth?.restaurantId === targetRid);
   }
 
   const orderMatch = /^order:([a-zA-Z0-9_-]+)$/.exec(room);
   if (orderMatch) {
-    if (auth.role === 'SUPER_ADMIN') return true;
-    if (!auth.restaurantId) return false;
-    const order = await getKnex()('orders')
-      .select('restaurant_id')
-      .where({ id: orderMatch[1] })
+    const orderId = orderMatch[1];
+    if (auth?.role === 'SUPER_ADMIN') return true;
+
+    if (auth?.restaurantId) {
+      const order = await getKnex()('orders')
+        .select('restaurant_id')
+        .where({ id: orderId })
+        .first();
+      if (order?.restaurant_id === auth.restaurantId) return true;
+    }
+
+    // A public QR token is scoped to one active table. It can subscribe only
+    // to orders belonging to that exact restaurant + table pair.
+    if (!qrToken) return false;
+    const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
+    if (process.env.NODE_ENV === 'test' && !['pg', 'postgres', 'postgresql'].includes(client)) {
+      const match = getDb().prepare(
+        `SELECT 1
+         FROM qr_codes q
+         JOIN orders o
+           ON o.restaurant_id = q.restaurant_id
+          AND o.table_id = q.table_id
+         WHERE q.token = ?
+           AND q.status = 'ACTIVE'
+           AND o.id = ?
+         LIMIT 1`,
+      ).get(qrToken, orderId);
+      return Boolean(match);
+    }
+
+    const match = await getKnex()('qr_codes as q')
+      .join('orders as o', function () {
+        this.on('o.restaurant_id', '=', 'q.restaurant_id')
+          .andOn('o.table_id', '=', 'q.table_id');
+      })
+      .select('q.restaurant_id')
+      .where('q.token', qrToken)
+      .where('q.status', 'ACTIVE')
+      .where('o.id', orderId)
       .first();
-    return Boolean(order && order.restaurant_id === auth.restaurantId);
+    return Boolean(match);
   }
 
   return false;
@@ -126,8 +160,9 @@ export function setupWebSocketServer(server: HttpServer): void {
     const cookies = parseCookieHeader(req.headers.cookie);
     const token =
       bearer || cookies.restomax_token || url.searchParams.get('token') || null;
+    const qrToken = url.searchParams.get('qrToken');
 
-    void authorizeWebSocketRoom(room, token)
+    void authorizeWebSocketRoom(room, token, qrToken)
       .then((allowed) => {
         if (!allowed || ws.readyState !== WebSocket.OPEN) {
           ws.close(1008, 'Accès WebSocket non autorisé.');
