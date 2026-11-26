@@ -590,7 +590,7 @@ export class KnexOperationsReadRepository {
     });
     const row = await trx('b2b_invoices').where({ id: params.id, restaurant_id: params.restaurantId }).first();
     if (!row) throw new Error('Document B2B créé introuvable.');
-    return (await this.findB2bInvoices(params.restaurantId)).find((item) => item.id === params.id)!;
+    return this.mapB2bInvoiceRow(row);
   }
 
   async updateB2bInvoiceStatus(restaurantId: string, id: string, status: B2bInvoice['status'], trx: Knex | Knex.Transaction = this.db): Promise<number> {
@@ -631,9 +631,10 @@ export class KnexOperationsReadRepository {
       notes: `Convertie depuis ${String(source.invoice_number)}${source.notes ? ` · ${String(source.notes)}` : ''}`,
       created_at: now,
     });
-    const invoice = (await this.findB2bInvoices(params.restaurantId)).find((item) => item.id === params.newId);
-    if (!invoice) throw new Error('Facture convertie introuvable.');
-    return { invoice, sourceInvoiceNumber: String(source.invoice_number) };
+    const invoiceRow = await trx('b2b_invoices')
+      .where({ id: params.newId, restaurant_id: params.restaurantId }).first();
+    if (!invoiceRow) throw new Error('Facture convertie introuvable.');
+    return { invoice: this.mapB2bInvoiceRow(invoiceRow), sourceInvoiceNumber: String(source.invoice_number) };
   }
 
   async findInventoryCounts(rid: string): Promise<InventoryCount[]> {
@@ -752,12 +753,8 @@ export class KnexOperationsReadRepository {
     return rows as StaffTimeClock[];
   }
 
-  async findB2bInvoices(rid: string): Promise<B2bInvoice[]> {
-    const rows = await this.db('b2b_invoices')
-      .where({ restaurant_id: rid })
-      .orderBy('created_at', 'desc')
-      .limit(100);
-    return rows.map((r) => ({
+  private mapB2bInvoiceRow(r: Record<string, unknown>): B2bInvoice {
+    return {
       id: String(r.id), restaurantId: String(r.restaurant_id),
       invoiceNumber: String(r.invoice_number),
       docType: r.doc_type === 'INVOICE' ? 'INVOICE' : 'PROFORMA',
@@ -771,7 +768,15 @@ export class KnexOperationsReadRepository {
       status: String(r.status || 'DRAFT') as B2bInvoice['status'],
       dueDate: r.due_date ? String(r.due_date) : null,
       notes: String(r.notes || ''), createdAt: String(r.created_at),
-    }));
+    };
+  }
+
+  async findB2bInvoices(rid: string): Promise<B2bInvoice[]> {
+    const rows = await this.db('b2b_invoices')
+      .where({ restaurant_id: rid })
+      .orderBy('created_at', 'desc')
+      .limit(100);
+    return rows.map((row) => this.mapB2bInvoiceRow(row));
   }
 
   async findPromotions(rid: string): Promise<Promotion[]> {
