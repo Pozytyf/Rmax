@@ -10,7 +10,7 @@ export class KnexOperationsReadRepository {
 
   async findCombos(rid: string, onlyActive = false): Promise<MenuCombo[]> {
     let query = this.db('menu_combos').where({ restaurant_id: rid });
-    if (onlyActive) query = query.where({ active: true });
+    if (onlyActive) query = query.where({ active: 1 });
     const rows = await query.orderBy('is_daily_special', 'desc').orderBy('created_at', 'desc');
     return rows.map((r) => ({
       id: String(r.id),
@@ -56,7 +56,7 @@ export class KnexOperationsReadRepository {
     await this.db('menu_combos').insert({
       id, restaurant_id: params.rid, name: params.name,
       description: params.description, price_xof: params.priceXof,
-      image_url: params.imageUrl, is_daily_special: params.isDailySpecial,
+      image_url: params.imageUrl, is_daily_special: params.isDailySpecial ? 1 : 0,
       items_json: JSON.stringify(params.items), active: true,
       created_at: new Date().toISOString(),
     });
@@ -75,8 +75,8 @@ export class KnexOperationsReadRepository {
     if (updates.name !== undefined) patch.name = updates.name;
     if (updates.description !== undefined) patch.description = updates.description;
     if (updates.priceXof !== undefined) patch.price_xof = updates.priceXof;
-    if (updates.isDailySpecial !== undefined) patch.is_daily_special = updates.isDailySpecial;
-    if (updates.active !== undefined) patch.active = updates.active;
+    if (updates.isDailySpecial !== undefined) patch.is_daily_special = updates.isDailySpecial ? 1 : 0;
+    if (updates.active !== undefined) patch.active = updates.active ? 1 : 0;
     if (updates.items !== undefined) patch.items_json = JSON.stringify(updates.items);
     if (!Object.keys(patch).length) return 0;
     return this.db('menu_combos').where({ id, restaurant_id: rid }).update(patch);
@@ -100,7 +100,7 @@ export class KnexOperationsReadRepository {
       discount_value: params.discountValue, min_order_xof: params.minOrderXof,
       days_json: JSON.stringify(params.days), start_time: params.startTime,
       end_time: params.endTime, category_id: params.categoryId,
-      max_uses: params.maxUses, uses_count: 0, active: true,
+      max_uses: params.maxUses, uses_count: 0, active: 1,
       created_at: new Date().toISOString(),
     });
     return id;
@@ -112,7 +112,7 @@ export class KnexOperationsReadRepository {
   ): Promise<number> {
     const patch: Record<string, unknown> = {};
     if (updates.name !== undefined) patch.name = updates.name;
-    if (updates.active !== undefined) patch.active = updates.active;
+    if (updates.active !== undefined) patch.active = updates.active ? 1 : 0;
     if (updates.discountValue !== undefined) patch.discount_value = updates.discountValue;
     if (updates.startTime !== undefined) patch.start_time = updates.startTime;
     if (updates.endTime !== undefined) patch.end_time = updates.endTime;

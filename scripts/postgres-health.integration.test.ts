@@ -363,7 +363,7 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
       id: menuItemId, restaurant_id: restaurantId,
       category_id: category.id, name: 'Plat PostgreSQL',
       description: 'Fixture integration', price_xof: 3200,
-      cost_price_xof: 900, image_url: null, available: true,
+      cost_price_xof: 900, image_url: null, available: 1,
       sort_order: 1, options_json: '[]', option_groups_json: '[]',
       created_at: now,
     });
