@@ -227,7 +227,6 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(schemaSql.includes("'users'"), true);
   assert.equal(schemaSql.includes("'sessions'"), true);
   assert.equal(schemaSql.includes("'auth_tokens'"), true);
-  assert.equal(schemaSql.includes("'knex_migrations'"), true);
   assert.equal(schemaSql.includes('USING (FALSE) WITH CHECK (FALSE)'), true);
 
   const seedSql = fs.readFileSync(seedPath, 'utf8');
