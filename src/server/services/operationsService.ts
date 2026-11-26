@@ -842,10 +842,14 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 8. Staff Shifts & PIN Time Clock ─────────────────────────────────────
-  listShiftsAndClocks(rid: string) {
+  async listShiftsAndClocks(rid: string) {
     this.ensureTenantId(rid);
-    const shifts = operationsRepository.findStaffShifts(rid);
-    const clocks = operationsRepository.findStaffTimeClocks(rid);
+    const [shifts, clocks] = usesPostgresRepositories()
+      ? await Promise.all([
+          knexOperationsReadRepository.findStaffShifts(rid),
+          knexOperationsReadRepository.findStaffTimeClocks(rid),
+        ])
+      : [operationsRepository.findStaffShifts(rid), operationsRepository.findStaffTimeClocks(rid)];
     const activeClocks = clocks.filter((c) => !c.clockOutAt);
 
     const hoursByUser = new Map<
@@ -1070,9 +1074,11 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 9. B2B Proforma & Invoices ───────────────────────────────────────────
-  listB2bInvoices(rid: string) {
+  async listB2bInvoices(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findB2bInvoices(rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findB2bInvoices(rid)
+      : operationsRepository.findB2bInvoices(rid);
   }
 
   createB2bInvoice(auth: AuthContext, body: Record<string, unknown>) {
