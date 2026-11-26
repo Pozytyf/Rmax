@@ -130,6 +130,51 @@ export class KnexPublicRepository {
       .first();
   }
 
+  async insertPublicOrderTransaction(
+    trx: Knex.Transaction,
+    params: {
+      orderId: string; restaurantId: string; orderNumber: string;
+      orderType: 'QR_TABLE' | 'CLICK_COLLECT' | 'DELIVERY'; tableId: string | null;
+      customerName: string; customerPhone: string; deliveryAddress: string;
+      deliveryZone: string; deliveryFeeXof: number; scheduledSlot: string;
+      promoCode: string; loyaltyPointsUsed: number; subtotalHtXof: number;
+      discountXof: number; taxXof: number; totalXof: number; notes: string;
+      idempotencyKey: string | null; now: string;
+      lines: Array<{
+        id: string; menuItemId: string; name: string; station: string;
+        unitPriceXof: number; optionsSummary: string; optionsDeltaXof: number;
+        quantity: number; lineTotalXof: number; notes: string;
+      }>;
+    },
+  ): Promise<void> {
+    await trx('orders').insert({
+      id: params.orderId, restaurant_id: params.restaurantId,
+      order_number: params.orderNumber, order_type: params.orderType,
+      table_id: params.tableId, customer_name: params.customerName,
+      customer_phone: params.customerPhone, delivery_address: params.deliveryAddress,
+      delivery_zone: params.deliveryZone, delivery_fee_xof: params.deliveryFeeXof,
+      scheduled_slot: params.scheduledSlot, promo_code: params.promoCode,
+      loyalty_points_used: params.loyaltyPointsUsed, loyalty_points_earned: 0,
+      status: 'PENDING', subtotal_xof: params.subtotalHtXof,
+      discount_xof: params.discountXof, tax_xof: params.taxXof,
+      total_xof: params.totalXof, paid_xof: 0, notes: params.notes,
+      idempotency_key: params.idempotencyKey, created_by_user_id: null,
+      created_at: params.now, updated_at: params.now,
+    });
+    await trx('order_items').insert(params.lines.map((line) => ({
+      id: line.id, order_id: params.orderId, menu_item_id: line.menuItemId,
+      name: line.name, station: line.station, unit_price_xof: line.unitPriceXof,
+      options_summary: line.optionsSummary, options_delta_xof: line.optionsDeltaXof,
+      quantity: line.quantity, line_total_xof: line.lineTotalXof,
+      notes: line.notes, prep_status: 'PENDING',
+    })));
+    if (params.tableId) {
+      await trx('dining_tables')
+        .where({ id: params.tableId, restaurant_id: params.restaurantId })
+        .update({ status: 'OCCUPIED' });
+    }
+  }
+
   async findTrackedQrOrder(token: string, orderId: string) {
     const order = await this.db('orders as o')
       .join('qr_codes as q', function () {
