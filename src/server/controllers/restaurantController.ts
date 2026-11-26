@@ -291,9 +291,9 @@ export const restaurantController = {
     }
   },
 
-  getStocks(req: Request, res: Response) {
+  async getStocks(req: Request, res: Response) {
     try {
-      const data = restaurantService.getStocks(req.auth!.restaurantId!);
+      const data = await restaurantService.getStocks(req.auth!.restaurantId!);
       res.json(data);
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement stocks.');
@@ -312,9 +312,9 @@ export const restaurantController = {
     }
   },
 
-  updateStockItem(req: Request, res: Response) {
+  async updateStockItem(req: Request, res: Response) {
     try {
-      restaurantService.updateStockItem(
+      await restaurantService.updateStockItem(
         req.auth!.restaurantId!,
         String(req.params.id),
         req.body || {},
@@ -325,9 +325,9 @@ export const restaurantController = {
     }
   },
 
-  deleteStockItem(req: Request, res: Response) {
+  async deleteStockItem(req: Request, res: Response) {
     try {
-      restaurantService.deleteStockItem(req.auth!, String(req.params.id));
+      await restaurantService.deleteStockItem(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression ingrédient.');
@@ -383,9 +383,9 @@ export const restaurantController = {
     }
   },
 
-  getStockAlertConfig(req: Request, res: Response) {
+  async getStockAlertConfig(req: Request, res: Response) {
     try {
-      const data = restaurantService.getStockAlertConfig(
+      const data = await restaurantService.getStockAlertConfig(
         req.auth!.restaurantId!,
       );
       res.json(data);
@@ -398,9 +398,9 @@ export const restaurantController = {
     }
   },
 
-  updateStockAlertConfig(req: Request, res: Response) {
+  async updateStockAlertConfig(req: Request, res: Response) {
     try {
-      const settings = restaurantService.updateStockAlertConfig(
+      const settings = await restaurantService.updateStockAlertConfig(
         req.auth!,
         req.body || {},
       );
@@ -435,18 +435,18 @@ export const restaurantController = {
     }
   },
 
-  getNotifications(req: Request, res: Response) {
+  async getNotifications(req: Request, res: Response) {
     try {
-      const data = restaurantService.getNotifications(req.auth!.restaurantId!);
+      const data = await restaurantService.getNotifications(req.auth!.restaurantId!);
       res.json(data);
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement notifications.');
     }
   },
 
-  markNotificationsRead(req: Request, res: Response) {
+  async markNotificationsRead(req: Request, res: Response) {
     try {
-      restaurantService.markNotificationsRead(
+      await restaurantService.markNotificationsRead(
         req.auth!.restaurantId!,
         req.body || {},
       );
