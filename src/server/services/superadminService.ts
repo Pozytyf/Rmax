@@ -816,7 +816,7 @@ export class SuperadminService extends BaseService<SuperadminRepository> {
     });
 
     const cleanBase = (baseUrl || process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
-    const smtpConfig = resolvePlatformSmtpConfig();
+    const smtpConfig = await resolvePlatformSmtpConfig();
     const emailResult = await sendAuthTransactionalEmail({
       to: target.email,
       fullName: target.full_name,

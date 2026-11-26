@@ -330,7 +330,7 @@ export const superadminController = {
     }
   },
 
-  getSettings(_req: Request, res: Response) {
+  async getSettings(_req: Request, res: Response) {
     try {
       const settings = await superadminService.getPlatformSettings();
       res.json({ settings });
@@ -339,7 +339,7 @@ export const superadminController = {
     }
   },
 
-  updateSettings(req: Request, res: Response) {
+  async updateSettings(req: Request, res: Response) {
     try {
       await superadminService.updatePlatformSettings(req.auth!, req.body || {});
       res.json({ ok: true });
