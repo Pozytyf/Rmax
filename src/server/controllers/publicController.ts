@@ -76,9 +76,9 @@ export const publicController = {
     }
   },
 
-  lookupQrLoyalty(req: Request, res: Response) {
+  async lookupQrLoyalty(req: Request, res: Response) {
     try {
-      const info = publicService.lookupPublicLoyaltyByQr(
+      const info = await publicService.lookupPublicLoyaltyByQr(
         String(req.params.token),
         String(req.query.phone || ''),
       );
@@ -176,9 +176,9 @@ export const publicController = {
     }
   },
 
-  lookupStorefrontLoyalty(req: Request, res: Response) {
+  async lookupStorefrontLoyalty(req: Request, res: Response) {
     try {
-      const info = publicService.lookupPublicLoyaltyBySlug(
+      const info = await publicService.lookupPublicLoyaltyBySlug(
         String(req.params.slug),
         String(req.query.phone || ''),
       );
