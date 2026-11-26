@@ -471,6 +471,21 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal(converted.invoice.docType, 'INVOICE');
     assert.match(converted.invoice.invoiceNumber, /^FACT-/);
 
+    const branchId = `it_branch_${suffix}`;
+    await db.transaction((trx) =>
+      knexOperationsReadRepository.createBranchVenue(trx, {
+        sourceRestaurantId: restaurantId, restaurantId: branchId,
+        name: 'Branch Integration', slug: `it-branch-${suffix}`,
+        email: `branch-${suffix}@example.invalid`, phone: '+22500000005',
+        address: 'Abidjan', city: 'Abidjan', ownerUserId: userId,
+        planId: plan.id, trialEndsAt: future, now,
+      }),
+    );
+    const consolidated = await knexOperationsReadRepository.findConsolidatedOverview(userId);
+    assert.equal(consolidated.venues.some((venue) => venue.restaurantId === branchId), true);
+    assert.equal(await db('dining_tables').where({ restaurant_id: branchId }).count({ c: '*' }).first().then((row) => Number(row?.c || 0)), 4);
+    assert.equal(await db('qr_codes').where({ restaurant_id: branchId }).count({ c: '*' }).first().then((row) => Number(row?.c || 0)), 4);
+
     const categories = await knexRestaurantStockRepository.findMenuCategories(restaurantId);
     const items = await knexRestaurantStockRepository.findMenuItems(restaurantId);
     assert.ok(categories.some((row) => String(row.id) === String(category.id)));
@@ -500,6 +515,13 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal((await knexOperationsReadRepository.findPromotions(`other_${suffix}`)).length, 0);
   } finally {
     if (promotionId) await db('promotions').where({ id: promotionId, restaurant_id: restaurantId }).del();
+    await db('qr_codes').where({ restaurant_id: `it_branch_${suffix}` }).del();
+    await db('dining_tables').where({ restaurant_id: `it_branch_${suffix}` }).del();
+    await db('menu_categories').where({ restaurant_id: `it_branch_${suffix}` }).del();
+    await db('restaurant_members').where({ restaurant_id: `it_branch_${suffix}` }).del();
+    await db('subscriptions').where({ restaurant_id: `it_branch_${suffix}` }).del();
+    await db('restaurants').where({ id: `it_branch_${suffix}` }).del();
+    await db('tenants').where({ id: `it_branch_${suffix}` }).del();
     await db('b2b_invoices').where({ restaurant_id: restaurantId }).del();
     await db('staff_time_clocks').where({ restaurant_id: restaurantId }).del();
     await db('inventory_count_lines').whereIn('inventory_count_id', db('inventory_counts').select('id').where({ restaurant_id: restaurantId })).del();
