@@ -138,9 +138,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur historique fidélité.');
     }
   },
-  adjustCustomerLoyalty(req: Request, res: Response) {
+  async adjustCustomerLoyalty(req: Request, res: Response) {
     try {
-      const result = operationsService.adjustCustomerLoyalty(
+      const result = await operationsService.adjustCustomerLoyalty(
         req.auth!,
         String(req.params.id),
         req.body || {},

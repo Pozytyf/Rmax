@@ -459,7 +459,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
       : operationsRepository.findLoyaltyTransactions(rid, customerId);
   }
 
-  adjustCustomerLoyalty(
+  async adjustCustomerLoyalty(
     auth: AuthContext,
     customerId: string,
     body: Record<string, unknown>,
@@ -469,6 +469,24 @@ export class OperationsService extends BaseService<OperationsRepository> {
     const reason = String(body?.reason || 'Ajustement manuel caisse').trim();
     if (!Number.isFinite(delta) || delta === 0) {
       throw new AppError(400, 'Nombre de points non nul requis.');
+    }
+
+    const now = new Date().toISOString();
+    if (usesPostgresRepositories()) {
+      return getKnex().transaction(async (trx) => {
+        const result = await knexOperationsReadRepository.adjustCustomerLoyalty(trx, {
+          restaurantId: rid, customerId, pointsDelta: delta, reason, now,
+        });
+        if (!result) throw new AppError(404, 'Client introuvable.');
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'LOYALTY_ADJUSTED', targetType: 'CUSTOMER',
+          targetId: customerId,
+          details: `${result.fullName} : ${result.appliedDelta > 0 ? `+${result.appliedDelta}` : result.appliedDelta} pts (${reason})`,
+        });
+        return { customerId, loyaltyPoints: result.loyaltyPoints };
+      });
     }
 
     const db = getDb();
@@ -482,7 +500,6 @@ export class OperationsService extends BaseService<OperationsRepository> {
     if (!cust) throw new AppError(404, 'Client introuvable.');
 
     const nextPoints = Math.max(0, Number(cust.loyalty_points || 0) + delta);
-    const now = new Date().toISOString();
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare(
