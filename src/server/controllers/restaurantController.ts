@@ -153,18 +153,18 @@ export const restaurantController = {
     }
   },
 
-  getPayments(req: Request, res: Response) {
+  async getPayments(req: Request, res: Response) {
     try {
-      const payments = restaurantService.getPayments(req.auth!.restaurantId!);
+      const payments = await restaurantService.getPayments(req.auth!.restaurantId!);
       res.json({ payments });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement paiements.');
     }
   },
 
-  payOrder(req: Request, res: Response) {
+  async payOrder(req: Request, res: Response) {
     try {
-      const result = restaurantService.payOrder(
+      const result = await restaurantService.payOrder(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -188,9 +188,9 @@ export const restaurantController = {
     }
   },
 
-  refundPayment(req: Request, res: Response) {
+  async refundPayment(req: Request, res: Response) {
     try {
-      restaurantService.refundPayment(req.auth!, String(req.params.id));
+      await restaurantService.refundPayment(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur remboursement.');
