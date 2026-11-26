@@ -446,6 +446,62 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal(await knexRestaurantStockRepository.countOrderReferencesForMenuItem(extraMenuItemId, restaurantId), 0);
     assert.equal(await knexRestaurantStockRepository.deleteMenuItem(extraMenuItemId, restaurantId), 1);
 
+    const movementIn = await db.transaction((trx) =>
+      knexRestaurantStockRepository.applyStockMovement(trx, {
+        rid: restaurantId, stockId, movementType: 'IN', quantity: 4,
+        reason: 'integration receipt', userId,
+      }),
+    );
+    assert.equal(movementIn.quantity, 10);
+    const movementOut = await db.transaction((trx) =>
+      knexRestaurantStockRepository.applyStockMovement(trx, {
+        rid: restaurantId, stockId, movementType: 'OUT', quantity: 2,
+        reason: 'integration issue', userId,
+      }),
+    );
+    assert.equal(movementOut.quantity, 8);
+    await assert.rejects(
+      db.transaction((trx) => knexRestaurantStockRepository.applyStockMovement(trx, {
+        rid: restaurantId, stockId, movementType: 'LOSS', quantity: 9,
+        reason: 'overdraw should fail', userId,
+      })),
+      /Stock insuffisant/,
+    );
+    const stockSummary = await knexRestaurantStockRepository.findStocksAndMovements(restaurantId);
+    assert.ok(stockSummary.stocks.some((row) => row.id === stockId));
+    assert.ok(stockSummary.movements.some((row) => row.movementType === 'OUT'));
+
+    const deletableStockId = await knexRestaurantStockRepository.createStockItem({
+      rid: restaurantId, name: 'Stock sans historique', unit: 'piece',
+      stockSection: 'BEVERAGE', quantity: 0, minThreshold: 0,
+      unitCostXof: 0, supplierName: '',
+    });
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.deleteStockItem(trx, deletableStockId, restaurantId),
+    );
+    await assert.rejects(
+      db.transaction((trx) => knexRestaurantStockRepository.deleteStockItem(trx, stockId, restaurantId)),
+      /historique ou est utilisé/,
+    );
+
+    await knexRestaurantStockRepository.upsertStockAlertSettings({
+      rid: restaurantId, inAppEnabled: true, emailEnabled: false,
+      recipientEmails: '', smtpHost: '', smtpPort: 587,
+      smtpSecure: false, smtpUser: '', smtpPass: 'secret-test', smtpFrom: '',
+    });
+    const alertSettings = await knexRestaurantStockRepository.findStockAlertSettings(restaurantId);
+    assert.equal(alertSettings.emailEnabled, false);
+    assert.equal(alertSettings.smtpPass, 'secret-test');
+    assert.ok((await knexRestaurantStockRepository.findManagerEmailsForRestaurant(restaurantId)).includes(email));
+    const notification = await knexRestaurantStockRepository.createNotification({
+      rid: restaurantId, type: 'STOCK_CRITICAL', title: 'Test alert',
+      message: 'Integration alert', stockId, emailDispatched: false,
+      emailRecipients: '', emailStatus: 'SKIPPED',
+    });
+    assert.equal((await knexRestaurantStockRepository.findNotificationsForRestaurant(restaurantId)).some((row) => row.id === notification.id), true);
+    assert.equal(await knexRestaurantStockRepository.markNotificationsRead(restaurantId, notification.id), 1);
+    assert.equal((await knexRestaurantStockRepository.findNotificationsForRestaurant(restaurantId)).find((row) => row.id === notification.id)?.isRead, true);
+
     const inventory = await db.transaction((trx) =>
       knexOperationsReadRepository.createInventoryCount(trx, {
         restaurantId, title: 'Inventaire test', stockSection: 'KITCHEN',
@@ -559,6 +615,8 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     await db('subscriptions').where({ restaurant_id: `it_branch_${suffix}` }).del();
     await db('restaurants').where({ id: `it_branch_${suffix}` }).del();
     await db('tenants').where({ id: `it_branch_${suffix}` }).del();
+    await db('notifications').where({ restaurant_id: restaurantId }).del();
+    await db('stock_alert_settings').where({ restaurant_id: restaurantId }).del();
     await db('b2b_invoices').where({ restaurant_id: restaurantId }).del();
     await db('staff_time_clocks').where({ restaurant_id: restaurantId }).del();
     await db('inventory_count_lines').whereIn('inventory_count_id', db('inventory_counts').select('id').where({ restaurant_id: restaurantId })).del();
