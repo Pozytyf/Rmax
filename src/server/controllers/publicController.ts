@@ -258,10 +258,10 @@ export const publicController = {
     }
   },
 
-  handlePaydunyaWebhook(req: Request, res: Response) {
+  async handlePaydunyaWebhook(req: Request, res: Response) {
     try {
       const sigHeader = req.get('x-paydunya-signature') || undefined;
-      const result = publicService.handlePaydunyaSubscriptionWebhook(
+      const result = await publicService.handlePaydunyaWebhook(
         (req.body || {}) as Record<string, unknown>,
         sigHeader,
       );

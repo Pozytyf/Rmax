@@ -206,7 +206,7 @@ export class KnexPublicRepository {
 
   async updatePaymentProviderDetails(params: {
     paymentId: string; restaurantId: string; providerReference: string;
-    checkoutUrl: string | null; providerStatus: string; payloadJson: string; now: string;
+    checkoutUrl: string | null; providerStatus: string; payloadJson: string; mode: string; now: string;
   }) {
     const updated = await this.db('payments')
       .where({
@@ -218,6 +218,7 @@ export class KnexPublicRepository {
         checkout_url: params.checkoutUrl,
         provider_status: params.providerStatus,
         provider_payload_json: params.payloadJson,
+        mode: params.mode,
         updated_at: params.now,
       });
     if (updated !== 1) throw new Error('Le paiement en attente est introuvable pour enregistrer la référence PayDunya.');

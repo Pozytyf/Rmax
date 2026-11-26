@@ -1238,6 +1238,7 @@ export class PublicService extends BaseService<PublicRepository> {
         payloadJson: JSON.stringify({
           providerMode: checkout.providerMode, simulated: checkout.simulated,
         }),
+        mode: checkout.mode,
         now: new Date().toISOString(),
       });
       return {
@@ -1796,6 +1797,109 @@ export class PublicService extends BaseService<PublicRepository> {
       review: created,
     });
     return { review: created };
+  }
+
+  async handlePaydunyaWebhook(body: Record<string, unknown>, signature?: string) {
+    const invoiceObj = body?.invoice && typeof body.invoice === 'object'
+      ? body.invoice as Record<string, unknown> : {};
+    const customData = body?.custom_data && typeof body.custom_data === 'object'
+      ? body.custom_data as Record<string, unknown>
+      : invoiceObj.custom_data && typeof invoiceObj.custom_data === 'object'
+        ? invoiceObj.custom_data as Record<string, unknown> : {};
+    if (String(customData.payment_type || '').toUpperCase() === 'ORDER') {
+      return this.handlePaydunyaOrderWebhook(body, signature);
+    }
+    return this.handlePaydunyaSubscriptionWebhook(body, signature);
+  }
+
+  private async handlePaydunyaOrderWebhook(body: Record<string, unknown>, signature?: string) {
+    if (!verifyPaydunyaIpnSignature(body, signature)) {
+      throw new AppError(401, 'Signature PayDunya invalide.');
+    }
+    const invoiceObj = body?.invoice && typeof body.invoice === 'object'
+      ? body.invoice as Record<string, unknown> : {};
+    const customData = body?.custom_data && typeof body.custom_data === 'object'
+      ? body.custom_data as Record<string, unknown>
+      : invoiceObj.custom_data && typeof invoiceObj.custom_data === 'object'
+        ? invoiceObj.custom_data as Record<string, unknown> : {};
+    const token = String(invoiceObj.token || body.token || '').trim();
+    const paymentId = String(customData.payment_id || '').trim();
+    const orderId = String(customData.order_id || '').trim();
+    const restaurantId = String(customData.restaurant_id || '').trim();
+    const amountFromCustom = Number(customData.amount_xof || 0);
+    const currencyFromCustom = String(customData.currency || '').toUpperCase();
+    const status = String(body.status || invoiceObj.status || '').toLowerCase();
+
+    if (!token || !paymentId || !orderId || !restaurantId) {
+      throw new AppError(400, 'Notification PayDunya incomplète : référence de paiement manquante.');
+    }
+    if (currencyFromCustom !== 'XOF') {
+      throw new AppError(400, 'Devise du paiement PayDunya invalide ou absente.');
+    }
+
+    const payment = await knexPublicRepository.findPaymentByProviderReference(token);
+    if (!payment || String(payment.id) !== paymentId ||
+        String(payment.order_id) !== orderId ||
+        String(payment.restaurant_id) !== restaurantId) {
+      throw new AppError(404, 'Paiement PayDunya introuvable ou non correspondant.');
+    }
+
+    if (status !== 'completed') {
+      if (['failed', 'cancelled', 'canceled', 'expired'].includes(status)) {
+        await knexPublicRepository.markPendingPaymentFailed({
+          paymentId, restaurantId, reason: `PayDunya status: ${status}`,
+          now: new Date().toISOString(),
+        });
+      }
+      return { ok: true, status: status || 'pending', paymentId };
+    }
+
+    const confirmation = await confirmPaydunyaInvoice(token);
+    if (!confirmation.completed || confirmation.amountXof === undefined ||
+        confirmation.currency !== 'XOF' ||
+        confirmation.amountXof !== Number(payment.amount_xof) ||
+        amountFromCustom !== Number(payment.amount_xof)) {
+      throw new AppError(400, 'La confirmation PayDunya ne correspond pas au montant ou à la devise du paiement.');
+    }
+
+    const now = new Date().toISOString();
+    const settlement = await getKnex().transaction(async (trx) => {
+      const result = await knexPublicRepository.completePaydunyaOrderPayment(trx, {
+        paymentId, restaurantId, orderId, providerReference: token,
+        amountXof: confirmation.amountXof!, payloadJson: JSON.stringify(body), now,
+      });
+      let pointsEarned = 0;
+      if (!result.alreadyPaid && result.fullyPaid) {
+        pointsEarned = await awardLoyaltyPointsOnPaidOrderKnex(trx, restaurantId, orderId);
+      }
+      if (!result.alreadyPaid) {
+        await recordAuditWithKnex(trx, {
+          actorUserId: null, actorEmail: 'paydunya-webhook',
+          actorRole: 'SYSTEM', restaurantId, action: 'PAYMENT_CONFIRMED',
+          targetType: 'PAYMENT', targetId: paymentId,
+          details: JSON.stringify({
+            orderId, providerReference: token, amountXof: confirmation.amountXof,
+            currency: confirmation.currency, fullyPaid: result.fullyPaid,
+          }),
+        });
+      }
+      return { ...result, pointsEarned };
+    });
+
+    if (!settlement.alreadyPaid) {
+      broadcastRestaurantEvent(restaurantId, 'payment:updated', {
+        orderId, paymentId, status: 'PAID', amountXof: confirmation.amountXof,
+      });
+      broadcastRestaurantEvent(restaurantId, 'order:updated', {
+        orderId, paidXof: settlement.order?.paid_xof,
+        status: settlement.fullyPaid ? 'PAID' : 'PENDING',
+      });
+    }
+    return {
+      ok: true, paymentId, orderId, status: 'PAID',
+      alreadyPaid: settlement.alreadyPaid, fullyPaid: settlement.fullyPaid,
+      pointsEarned: settlement.pointsEarned,
+    };
   }
 
   handlePaydunyaSubscriptionWebhook(
