@@ -9,7 +9,7 @@ export class KnexOperationsReadRepository {
 
   async findCombos(rid: string, onlyActive = false): Promise<MenuCombo[]> {
     let query = this.db('menu_combos').where({ restaurant_id: rid });
-    if (onlyActive) query = query.where({ active: 1 });
+    if (onlyActive) query = query.where({ active: true });
     const rows = await query.orderBy('is_daily_special', 'desc').orderBy('created_at', 'desc');
     return rows.map((r) => ({
       id: String(r.id),
