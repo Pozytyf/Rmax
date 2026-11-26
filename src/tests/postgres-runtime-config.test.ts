@@ -61,7 +61,7 @@ test('PostgreSQL configuration selects the pg driver when configured', () => {
   }
 });
 
-test('Vercel production refuses SQLite configuration', () => {
+test('all production runtimes refuse SQLite configuration', () => {
   const previous = {
     client: process.env.DATABASE_CLIENT,
     nodeEnv: process.env.NODE_ENV,
@@ -71,10 +71,10 @@ test('Vercel production refuses SQLite configuration', () => {
   try {
     process.env.DATABASE_CLIENT = 'sqlite';
     process.env.NODE_ENV = 'production';
-    process.env.VERCEL = '1';
+    delete process.env.VERCEL;
     assert.throws(
       () => buildKnexConfig('/tmp/restomax-test.db'),
-      /SQLite ne peut pas être utilisé/,
+      /SQLite ne peut pas être utilisé en production/,
     );
   } finally {
     if (previous.client === undefined) delete process.env.DATABASE_CLIENT;

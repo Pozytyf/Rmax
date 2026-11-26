@@ -108,9 +108,9 @@ export function buildKnexConfig(dbPath: string = defaultDbPath): Knex.Config {
     return buildPostgresKnexConfig(pgUrl);
   }
 
-  if (process.env.NODE_ENV === 'production' && process.env.VERCEL) {
+  if (process.env.NODE_ENV === 'production') {
     throw new Error(
-      'SQLite ne peut pas être utilisé comme base métier sur Vercel. Configurez DATABASE_CLIENT=pg et DATABASE_URL.',
+      'SQLite ne peut pas être utilisé comme base métier en production. Configurez DATABASE_CLIENT=pg et DATABASE_URL.',
     );
   }
 
