@@ -156,6 +156,42 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(coreMigrationSql.includes("'OWNER'"), true);
   assert.equal(coreMigrationSql.includes('tenant_isolation_order_items'), true);
 
+  const operationsMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260011_add_operations_schema_and_rls.sql',
+  );
+  assert.equal(fs.existsSync(operationsMigrationPath), true);
+  const operationsMigrationSql = fs.readFileSync(operationsMigrationPath, 'utf8');
+  for (const tbl of [
+    'menu_combos',
+    'promotions',
+    'cash_register_sessions',
+    'table_calls',
+    'loyalty_transactions',
+    'customer_reviews',
+    'inventory_counts',
+    'inventory_count_lines',
+    'staff_shifts',
+    'staff_time_clocks',
+    'b2b_invoices',
+  ]) {
+    assert.equal(
+      operationsMigrationSql.includes(`CREATE TABLE IF NOT EXISTS public.${tbl}`),
+      true,
+      `Missing operations table ${tbl} in Supabase migration`,
+    );
+  }
+  assert.equal(operationsMigrationSql.includes('tenant_isolation_inventory_count_lines'), true);
+  assert.equal(operationsMigrationSql.includes('uq_orders_restaurant_order_number'), true);
+
+  const revokeMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260010_revoke_public_rls_trigger_execute.sql',
+  );
+  assert.equal(fs.existsSync(revokeMigrationPath), true);
+  const revokeMigrationSql = fs.readFileSync(revokeMigrationPath, 'utf8');
+  assert.equal(revokeMigrationSql.includes('REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM PUBLIC'), true);
+
   const seedSql = fs.readFileSync(seedPath, 'utf8');
   assert.equal(seedSql.includes('rest_sillage_01'), true);
   assert.equal(seedSql.includes('proprietaire@lesillage.ci'), true);
