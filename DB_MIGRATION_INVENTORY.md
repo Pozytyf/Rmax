@@ -48,8 +48,10 @@ Les parcours suivants ont maintenant une implémentation Knex et sont sélection
 - Fidélité : historique et ajustement transactionnel avec verrouillage `FOR UPDATE`, journal de mouvement et audit dans la même transaction.
 - Avis clients : lecture et réponse tenant-scopée.
 - Inventaires : lecture des en-têtes et lignes avec jointure des stocks bornée au restaurant.
-- Planning et pointages : lectures des horaires et des temps de présence.
+- Planning et pointages : lectures des horaires et des temps de présence, création et suppression des créneaux.
+- Caisse : lecture des rapports, ouverture et clôture transactionnelles ; verrouillage de la ligne restaurant à l'ouverture et de la session à la clôture.
 - Factures B2B : lecture tenant-scopée.
+- Paramètres de plateforme : lecture et upsert PostgreSQL, avec audit dans la même transaction.
 
 Corrections de revue associées :
 - Suppression d'un bloc de dix méthodes dupliquées dans `publicRepository.knex.ts`, qui créait des implémentations de classe redondantes.
