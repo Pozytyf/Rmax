@@ -46,6 +46,9 @@ Pipeline [3117518872](https://gitlab.com/multitachesci/Kokolia/-/pipelines/31175
 
 Le build signale encore un bundle frontend principal supérieur à 700 kB ; c'est une optimisation de performance à traiter dans le chantier UX/performance.
 
+### Inventaire des accès SQLite
+Le relevé statique compte encore 281 appels `getDb()`, 435 appels `.prepare()` et 81 appels `.exec()` dans les repositories, le middleware et les services. Le détail par fichier et l'ordre de conversion sont consignés dans `DB_MIGRATION_INVENTORY.md`.
+
 ### Travaux bloquants avant clôture
 1. Migrer les repositories `authRepository`, `publicRepository`, `restaurantRepository`, `operationsRepository`, `superadminRepository` et `BaseRepository` vers un accès Knex asynchrone.
 2. Convertir leurs services, controllers et middleware consommateurs, y compris transactions et rollback.
