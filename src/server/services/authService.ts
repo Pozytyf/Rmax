@@ -194,6 +194,9 @@ export class AuthService {
     const selectedPlan = await authRepository.findPlanForRegistration(
       String(planCode || 'ESSENTIEL').toUpperCase(),
     );
+    if (!selectedPlan) {
+      throw new AppError(503, 'Aucun plan SaaS actif n’est configuré. Contactez le support.');
+    }
 
     const now = new Date().toISOString();
     const trialDays = selectedPlan?.trial_days || 14;
