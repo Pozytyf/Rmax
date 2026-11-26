@@ -182,7 +182,11 @@ export function setupWebSocketServer(server: HttpServer): void {
         ws.on('close', () => clients.delete(meta));
         ws.on('error', () => clients.delete(meta));
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        console.error(
+          '[WebSocket] Room authorization failed:',
+          error instanceof Error ? error.message : String(error),
+        );
         ws.close(1011, 'Impossible de vérifier les autorisations WebSocket.');
       });
   });;
