@@ -35,6 +35,9 @@ function isLegacyPublicTestRuntime(): boolean {
 const publicReadRepository = (
   isLegacyPublicTestRuntime() ? publicRepository : knexPublicRepository
 ) as unknown as typeof publicRepository;
+const publicMutationRepository = (
+  isLegacyPublicTestRuntime() ? publicRepository : knexPublicRepository
+) as unknown as typeof publicRepository;
 
 export class PublicService extends BaseService<PublicRepository> {
   constructor(repo = publicRepository) {
@@ -1431,8 +1434,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  callWaiterOrBill(token: string, body: Record<string, unknown>) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async callWaiterOrBill(token: string, body: Record<string, unknown>) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -1447,7 +1450,7 @@ export class PublicService extends BaseService<PublicRepository> {
     const tableId = String(qrRow.table_id);
     const tableLabel = String(qrRow.table_label);
 
-    const call = publicRepository.createTableCall({
+    const call = await publicMutationRepository.createTableCall({
       restaurantId,
       tableId,
       tableLabel,
@@ -1499,28 +1502,28 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  submitQrReview(token: string, orderId: string, body: Record<string, unknown>) {
-    const tracked = publicRepository.findTrackedQrOrder(token, orderId);
+  async submitQrReview(token: string, orderId: string, body: Record<string, unknown>) {
+    const tracked = await publicReadRepository.findTrackedQrOrder(token, orderId);
     if (!tracked) {
       throw new AppError(404, 'Commande introuvable pour cette table.');
     }
-    return this.createReviewForTrackedOrder(tracked, body);
+    return await this.createReviewForTrackedOrder(tracked, body);
   }
 
-  submitStorefrontReview(
+  async submitStorefrontReview(
     slug: string,
     orderId: string,
     body: Record<string, unknown>,
   ) {
-    const tracked = publicRepository.findTrackedStorefrontOrder(slug, orderId);
+    const tracked = await publicReadRepository.findTrackedStorefrontOrder(slug, orderId);
     if (!tracked) {
       throw new AppError(404, 'Commande introuvable.');
     }
-    return this.createReviewForTrackedOrder(tracked, body);
+    return await this.createReviewForTrackedOrder(tracked, body);
   }
 
-  submitQrServiceRating(token: string, body: Record<string, unknown>) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async submitQrServiceRating(token: string, body: Record<string, unknown>) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -1535,7 +1538,7 @@ export class PublicService extends BaseService<PublicRepository> {
       .slice(0, 80) || 'Client salle';
     const restaurantId = String(qrRow.restaurant_id);
 
-    const created = publicRepository.insertCustomerReview({
+    const created = await publicMutationRepository.insertCustomerReview({
       restaurantId,
       orderId: null,
       orderNumber: '',
@@ -1555,12 +1558,12 @@ export class PublicService extends BaseService<PublicRepository> {
     });
     return {
       review: created,
-      ratingSummary: publicRepository.findPublicRatingStats(restaurantId),
+      ratingSummary: await publicReadRepository.findPublicRatingStats(restaurantId),
     };
   }
 
-  submitStorefrontServiceRating(slug: string, body: Record<string, unknown>) {
-    const resto = publicRepository.findStorefrontBySlug(slug);
+  async submitStorefrontServiceRating(slug: string, body: Record<string, unknown>) {
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Vitrine restaurant introuvable.');
     }
@@ -1575,7 +1578,7 @@ export class PublicService extends BaseService<PublicRepository> {
       .slice(0, 80) || 'Client en ligne';
     const restaurantId = String(resto.id);
 
-    const created = publicRepository.insertCustomerReview({
+    const created = await publicMutationRepository.insertCustomerReview({
       restaurantId,
       orderId: null,
       orderNumber: '',
@@ -1595,11 +1598,11 @@ export class PublicService extends BaseService<PublicRepository> {
     });
     return {
       review: created,
-      ratingSummary: publicRepository.findPublicRatingStats(restaurantId),
+      ratingSummary: await publicReadRepository.findPublicRatingStats(restaurantId),
     };
   }
 
-  private createReviewForTrackedOrder(
+  private async createReviewForTrackedOrder(
     tracked: {
       order: Record<string, unknown>;
       review: Record<string, unknown> | null;
@@ -1628,11 +1631,8 @@ export class PublicService extends BaseService<PublicRepository> {
       .trim()
       .slice(0, 80);
 
-    // Fetch restaurant_id securely from orders row
-    const ordRow = getDb()
-      .prepare('SELECT restaurant_id FROM orders WHERE id = ?')
-      .get(String(order.id)) as { restaurant_id: string } | undefined;
-    if (!ordRow) {
+    const restaurantId = String(order.restaurant_id || order.restaurantId || '');
+    if (!restaurantId) {
       throw new AppError(404, 'Commande introuvable.');
     }
 
@@ -1642,8 +1642,8 @@ export class PublicService extends BaseService<PublicRepository> {
         ? 'STOREFRONT_ORDER'
         : 'QR_ORDER';
 
-    const created = publicRepository.insertCustomerReview({
-      restaurantId: ordRow.restaurant_id,
+    const created = await publicMutationRepository.insertCustomerReview({
+      restaurantId,
       orderId: String(order.id),
       orderNumber: String(order.order_number),
       tableLabel: String(order.table_label || orderType || ''),
