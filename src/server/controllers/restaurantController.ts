@@ -334,9 +334,9 @@ export const restaurantController = {
     }
   },
 
-  getPurchaseOrders(req: Request, res: Response) {
+  async getPurchaseOrders(req: Request, res: Response) {
     try {
-      const purchaseOrders = restaurantService.getPurchaseOrders(
+      const purchaseOrders = await restaurantService.getPurchaseOrders(
         req.auth!.restaurantId!,
       );
       res.json({ purchaseOrders });
@@ -345,9 +345,9 @@ export const restaurantController = {
     }
   },
 
-  createPurchaseOrder(req: Request, res: Response) {
+  async createPurchaseOrder(req: Request, res: Response) {
     try {
-      const result = restaurantService.createPurchaseOrder(
+      const result = await restaurantService.createPurchaseOrder(
         req.auth!,
         req.body || {},
       );
@@ -357,9 +357,9 @@ export const restaurantController = {
     }
   },
 
-  updatePurchaseOrderStatus(req: Request, res: Response) {
+  async updatePurchaseOrderStatus(req: Request, res: Response) {
     try {
-      restaurantService.updatePurchaseOrderStatus(
+      await restaurantService.updatePurchaseOrderStatus(
         req.auth!,
         String(req.params.id),
         req.body?.status,
