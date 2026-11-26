@@ -9,6 +9,7 @@
     "NODE_ENV": "production",
     "DATABASE_CLIENT": "pg",
     "DATABASE_SSL": "true",
+    "PAYDUNYA_MODE": "LIVE",
     "DB_POOL_MIN": "0",
     "DB_POOL_MAX": "5",
     "PAYMENT_MODE": "TEST"

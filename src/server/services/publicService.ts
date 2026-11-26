@@ -1211,7 +1211,8 @@ export class PublicService extends BaseService<PublicRepository> {
     });
 
     const configuredBase = process.env.APP_URL || process.env.PUBLIC_APP_URL ||
-      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` :
+        process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
     if (!configuredBase) {
       await knexPublicRepository.markPendingPaymentFailed({
         paymentId, restaurantId: order.restaurant_id,
