@@ -25,6 +25,7 @@ const migrationFiles = [
   '202611260019_add_public_restaurant_settings.sql',
   '202611260020_seed_default_saas_plans.sql',
   '202611260021_restaurant_order_counters.sql',
+  '202611260022_payment_provider_metadata.sql',
 ];
 
 async function main(): Promise<void> {

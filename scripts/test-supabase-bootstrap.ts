@@ -64,6 +64,7 @@ async function main(): Promise<void> {
       '202611260019_add_public_restaurant_settings.sql',
       '202611260020_seed_default_saas_plans.sql',
       '202611260021_restaurant_order_counters.sql',
+      '202611260022_payment_provider_metadata.sql',
     ]) {
       const migrationPath = path.resolve(process.cwd(), 'supabase/migrations', migration);
       await client.query(await fs.readFile(migrationPath, 'utf8'));
@@ -131,6 +132,15 @@ async function main(): Promise<void> {
       "SELECT count(*)::int AS count FROM pg_policies WHERE schemaname='public' AND tablename='restaurant_order_counters' AND policyname='deny_api_access_restaurant_order_counters'",
     );
     assert.equal(counterPolicy.rows[0]?.count, 1, 'Order counter must deny direct API access');
+
+    const paymentProviderColumns = await client.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='payments' AND column_name IN ('provider','provider_reference','checkout_url','provider_status','provider_payload_json','updated_at')",
+    );
+    assert.equal(paymentProviderColumns.rowCount, 6, 'Payments table is missing provider reconciliation columns');
+    const providerIndex = await client.query(
+      "SELECT count(*)::int AS count FROM pg_indexes WHERE schemaname='public' AND tablename='payments' AND indexname='payments_provider_reference_unique'",
+    );
+    assert.equal(providerIndex.rows[0]?.count, 1, 'Payments provider reference must be unique');
 
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",
