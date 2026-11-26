@@ -392,6 +392,44 @@ CREATE TABLE IF NOT EXISTS public.expenses (
 );
 
 -- 11. Support, Audit & Leads marketing
+CREATE TABLE IF NOT EXISTS public.purchase_orders (
+  id TEXT PRIMARY KEY,
+  restaurant_id TEXT NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+  po_number TEXT NOT NULL,
+  supplier_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  total_cost_xof INTEGER NOT NULL DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
+  expected_date TEXT,
+  received_at TEXT,
+  created_by_user_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.purchase_order_items (
+  id TEXT PRIMARY KEY,
+  purchase_order_id TEXT NOT NULL REFERENCES public.purchase_orders(id) ON DELETE CASCADE,
+  stock_id TEXT NOT NULL REFERENCES public.stocks(id),
+  stock_name TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  quantity REAL NOT NULL,
+  unit_cost_xof INTEGER NOT NULL DEFAULT 0,
+  line_total_xof INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS public.whatsapp_logs (
+  id TEXT PRIMARY KEY,
+  restaurant_id TEXT NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+  recipient_phone TEXT NOT NULL,
+  message_type TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL,
+  external_message_id TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS public.support_tickets (
   id TEXT PRIMARY KEY,
   restaurant_id TEXT REFERENCES public.restaurants(id) ON DELETE SET NULL,
@@ -618,6 +656,10 @@ CREATE INDEX IF NOT EXISTS idx_users_tenant_status ON public.users(tenant_id, st
 CREATE INDEX IF NOT EXISTS idx_users_tenant_role ON public.users(tenant_id, role);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_hash ON public.auth_tokens(token_hash, token_type);
 CREATE INDEX IF NOT EXISTS idx_orders_restaurant_created ON public.orders(restaurant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_purchase_orders_restaurant_created ON public.purchase_orders(restaurant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_purchase_order_items_order ON public.purchase_order_items(purchase_order_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_order_items_stock ON public.purchase_order_items(stock_id);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_restaurant_created ON public.whatsapp_logs(restaurant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_restaurant_status ON public.orders(restaurant_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_restaurant_order_number ON public.orders(restaurant_id, order_number);
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON public.order_items(order_id);
@@ -729,6 +771,45 @@ AS $function$
     ''
   ) = 'SUPER_ADMIN';
 $function$;
+
+-- Isolation des tables portant directement un restaurant_id.
+DO $tenant$
+DECLARE
+  tbl TEXT;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY[
+    'restaurant_members',
+    'menu_categories',
+    'menu_items',
+    'dining_tables',
+    'qr_codes',
+    'orders',
+    'payments',
+    'stocks',
+    'stock_movements',
+    'menu_item_recipes',
+    'stock_alert_settings',
+    'notifications',
+    'customers',
+    'reservations',
+    'expenses',
+    'support_tickets',
+    'purchase_orders',
+    'qr_table_sessions',
+    'whatsapp_logs'
+  ]
+  LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', tbl);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_%I ON public.%I', tbl, tbl);
+    EXECUTE format(
+      'CREATE POLICY tenant_isolation_%I ON public.%I FOR ALL USING (public.is_superadmin() OR restaurant_id = public.current_tenant_id()) WITH CHECK (public.is_superadmin() OR restaurant_id = public.current_tenant_id())',
+      tbl, tbl
+    );
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO authenticated, service_role', tbl);
+    EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon', tbl);
+  END LOOP;
+END
+$tenant$;
 
 -- Activation RLS sur les tables métier
 ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
@@ -849,6 +930,7 @@ DECLARE
 BEGIN
   FOREACH tbl IN ARRAY ARRAY[
     'users',
+    'roles',
     'sessions',
     'auth_tokens',
     'schema_migrations',
