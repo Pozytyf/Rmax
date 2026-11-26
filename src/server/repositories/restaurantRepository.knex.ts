@@ -1,8 +1,11 @@
 import crypto from 'node:crypto';
 import type { Knex } from 'knex';
+import { getKnex } from '../knex.ts';
 import { AppError } from '../services/errors.ts';
 
 export class KnexRestaurantStockRepository {
+  constructor(private readonly db: Knex = getKnex()) {}
+
   async findMenuCategories(rid: string) {
     return this.db('menu_categories')
       .select({
