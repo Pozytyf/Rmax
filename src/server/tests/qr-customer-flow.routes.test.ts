@@ -319,7 +319,7 @@ describe('Customer QR journey (/api/public/qr & end-to-end table-menu-order-trac
 
     const receivedEvents: Array<{ type: string; payload?: { status?: string } }> = [];
     const ws = new WebSocket(
-      `ws://127.0.0.1:${port}/ws?room=${encodeURIComponent(`order:${placedOrderId}`)}&token=${encodeURIComponent(ownerToken)}`,
+      `ws://127.0.0.1:${port}/ws?room=${encodeURIComponent(`order:${placedOrderId}`)}&qrToken=${encodeURIComponent(createdQrToken)}`,
     );
     let roomReady = false;
     let resolveRoomReady!: () => void;
