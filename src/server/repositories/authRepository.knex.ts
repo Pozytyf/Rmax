@@ -204,7 +204,7 @@ export class KnexAuthRepository {
       global_role: 'USER',
       permissions_json: '[]',
       status: 'ACTIVE',
-      email_verified: false,
+      email_verified: 0,
       created_at: params.now,
     });
 
@@ -293,7 +293,7 @@ export class KnexAuthRepository {
 
   async markUserEmailVerified(userId: string, trx: Executor = this.db): Promise<number> {
     const now = new Date().toISOString();
-    return trx('users').where({ id: userId }).update({ email_verified: true, email_verified_at: now, updated_at: now });
+    return trx('users').where({ id: userId }).update({ email_verified: 1, email_verified_at: now, updated_at: now });
   }
 
   async createAuthToken(params: {

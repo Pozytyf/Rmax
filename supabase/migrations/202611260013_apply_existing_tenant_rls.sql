@@ -63,12 +63,24 @@ REVOKE ALL ON TABLE public.users FROM anon, authenticated;
 -- Internal authentication/session data and Knex migration bookkeeping are backend-only.
 ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.auth_tokens ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.knex_migrations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.knex_migrations_lock ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.sessions FROM anon, authenticated;
 REVOKE ALL ON TABLE public.auth_tokens FROM anon, authenticated;
-REVOKE ALL ON TABLE public.knex_migrations FROM anon, authenticated;
-REVOKE ALL ON TABLE public.knex_migrations_lock FROM anon, authenticated;
+
+-- Knex bookkeeping tables exist only after the Knex migration runner has
+-- initialized them. A fresh SQL-only Supabase bootstrap must not fail if they
+-- have not been created yet.
+DO $
+BEGIN
+  IF to_regclass('public.knex_migrations') IS NOT NULL THEN
+    ALTER TABLE public.knex_migrations ENABLE ROW LEVEL SECURITY;
+    REVOKE ALL ON TABLE public.knex_migrations FROM anon, authenticated;
+  END IF;
+  IF to_regclass('public.knex_migrations_lock') IS NOT NULL THEN
+    ALTER TABLE public.knex_migrations_lock ENABLE ROW LEVEL SECURITY;
+    REVOKE ALL ON TABLE public.knex_migrations_lock FROM anon, authenticated;
+  END IF;
+END
+$;
 
 -- Child records are scoped through their parent tenant-owned row.
 ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
