@@ -1058,6 +1058,24 @@ function runMigrations(db: SqliteDatabase): void {
   }
 
   // Additive compatibility migration for existing local SQLite databases.
+  const existingRestaurantColumns = new Set(
+    (db.pragma('table_info(restaurants)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  const missingRestaurantColumns: Array<[string, string]> = [
+    ['loyalty_enabled', 'INTEGER NOT NULL DEFAULT 1'],
+    ['loyalty_points_per_1000_xof', 'INTEGER NOT NULL DEFAULT 10'],
+    ['loyalty_xof_per_point', 'INTEGER NOT NULL DEFAULT 25'],
+    ['storefront_enabled', 'INTEGER NOT NULL DEFAULT 1'],
+    ['delivery_enabled', 'INTEGER NOT NULL DEFAULT 1'],
+    ['delivery_zones_json', "TEXT NOT NULL DEFAULT '[]'"],
+    ['pickup_slots_json', "TEXT NOT NULL DEFAULT '[]'"],
+  ];
+  for (const [column, definition] of missingRestaurantColumns) {
+    if (!existingRestaurantColumns.has(column)) {
+      db.exec(`ALTER TABLE restaurants ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
   const existingOrderColumns = new Set(
     (db.pragma('table_info(orders)') as Array<{ name: string }>).map((column) => column.name),
   );
