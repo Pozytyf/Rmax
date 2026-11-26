@@ -1150,6 +1150,9 @@ export class PublicService extends BaseService<PublicRepository> {
     orderId: string,
     body: Record<string, unknown>,
   ) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new AppError(503, 'Le paiement en ligne est temporairement indisponible : la confirmation sécurisée du prestataire doit être activée avant toute validation.');
+    }
     const method = String(body?.method || '').toUpperCase();
     const validMethods = ['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'];
     if (!validMethods.includes(method)) {
@@ -1309,6 +1312,9 @@ export class PublicService extends BaseService<PublicRepository> {
     orderId: string,
     body: Record<string, unknown>,
   ) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new AppError(503, 'Le paiement en ligne est temporairement indisponible : la confirmation sécurisée du prestataire doit être activée avant toute validation.');
+    }
     const method = String(body?.method || '').toUpperCase();
     const validMethods = ['WAVE', 'ORANGE_MONEY', 'MTN_MOMO', 'CARD'];
     if (!validMethods.includes(method)) {

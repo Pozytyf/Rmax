@@ -39,19 +39,18 @@ export interface PaydunyaConfirmResult {
 }
 
 function readPlatformPaydunyaSettings(): Record<string, string> {
-  try {
-    const db = getDb();
-    const rows = db
-      .prepare(
-        "SELECT key, value FROM platform_settings WHERE key LIKE 'paydunya_%'",
-      )
-      .all() as Array<{ key: string; value: string }>;
-    const map: Record<string, string> = {};
-    for (const r of rows) map[r.key] = r.value;
-    return map;
-  } catch {
-    return {};
-  }
+  // Production credentials must come from the deployment secret store.
+  // Do not read a local/ephemeral SQLite settings table in serverless runtime.
+  if (process.env.NODE_ENV === 'production') return {};
+  const db = getDb();
+  const rows = db
+    .prepare(
+      "SELECT key, value FROM platform_settings WHERE key LIKE 'paydunya_%'",
+    )
+    .all() as Array<{ key: string; value: string }>;
+  const map: Record<string, string> = {};
+  for (const r of rows) map[r.key] = r.value;
+  return map;
 }
 
 export function resolvePaydunyaPlatformCredentials(): PaydunyaPlatformCredentials {
@@ -108,6 +107,9 @@ export async function createPaydunyaSubscriptionCheckout(
   const creds = resolvePaydunyaPlatformCredentials();
 
   if (!creds.configured) {
+    if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
+      throw new Error('Configuration PayDunya absente : les paiements réels sont désactivés tant que les clés de production ne sont pas configurées.');
+    }
     const simToken = `pdx_sim_${crypto.randomBytes(10).toString('hex')}`;
     return {
       providerMode: 'SANDBOX_SIMULATION',
@@ -199,6 +201,13 @@ export async function confirmPaydunyaInvoice(
   }
 
   if (cleanToken.startsWith('pdx_sim_')) {
+    if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
+      return {
+        completed: false,
+        status: 'failed',
+        providerMessage: 'Un jeton de simulation ne peut jamais confirmer un paiement en production.',
+      };
+    }
     return { completed: true, status: 'completed' };
   }
 
