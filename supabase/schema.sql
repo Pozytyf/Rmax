@@ -607,6 +607,7 @@ CREATE INDEX IF NOT EXISTS idx_users_tenant_status ON public.users(tenant_id, st
 CREATE INDEX IF NOT EXISTS idx_users_tenant_role ON public.users(tenant_id, role);
 CREATE INDEX IF NOT EXISTS idx_orders_restaurant_created ON public.orders(restaurant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_restaurant_status ON public.orders(restaurant_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_restaurant_order_number ON public.orders(restaurant_id, order_number);
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON public.order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_payments_restaurant_created ON public.payments(restaurant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_menu_items_restaurant ON public.menu_items(restaurant_id, category_id);
