@@ -207,9 +207,9 @@ export const operationsController = {
   },
 
   // Shifts & PIN Clock
-  listShiftsAndClocks(req: Request, res: Response) {
+  async listShiftsAndClocks(req: Request, res: Response) {
     try {
-      res.json(operationsService.listShiftsAndClocks(req.auth!.restaurantId!));
+      res.json(await operationsService.listShiftsAndClocks(req.auth!.restaurantId!));
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement planning & pointages.');
     }
@@ -240,10 +240,10 @@ export const operationsController = {
   },
 
   // B2B Invoices & Proformas
-  listB2bInvoices(req: Request, res: Response) {
+  async listB2bInvoices(req: Request, res: Response) {
     try {
       res.json({
-        documents: operationsService.listB2bInvoices(req.auth!.restaurantId!),
+        documents: await operationsService.listB2bInvoices(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement factures B2B.');
