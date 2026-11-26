@@ -338,7 +338,7 @@ export class AuthService {
       throw new AppError(403, 'Cet établissement est actuellement suspendu.');
     }
 
-    const row = await authRepository.findMembershipForVenue(auth.userId, cleanId);
+    const row = await authRepository.findMemberForPinLogin(cleanId, auth.userId);
     await runAuthTransaction(async (trx) => {
       const updated = await authRepository.switchSessionRestaurant(auth.sessionId, auth.userId, cleanId, trx);
       if (updated !== 1) throw new AppError(401, 'Session invalide ou expirée.');
