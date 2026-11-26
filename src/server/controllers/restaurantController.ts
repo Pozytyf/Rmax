@@ -197,18 +197,18 @@ export const restaurantController = {
     }
   },
 
-  getTables(req: Request, res: Response) {
+  async getTables(req: Request, res: Response) {
     try {
-      const tables = restaurantService.getTables(req.auth!.restaurantId!);
+      const tables = await restaurantService.getTables(req.auth!.restaurantId!);
       res.json({ tables });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement tables.');
     }
   },
 
-  createTable(req: Request, res: Response) {
+  async createTable(req: Request, res: Response) {
     try {
-      const result = restaurantService.createTable(
+      const result = await restaurantService.createTable(
         req.auth!.restaurantId!,
         req.body || {},
       );
@@ -218,9 +218,9 @@ export const restaurantController = {
     }
   },
 
-  updateTable(req: Request, res: Response) {
+  async updateTable(req: Request, res: Response) {
     try {
-      restaurantService.updateTable(
+      await restaurantService.updateTable(
         req.auth!.restaurantId!,
         String(req.params.id),
         req.body || {},
@@ -231,18 +231,18 @@ export const restaurantController = {
     }
   },
 
-  deleteTable(req: Request, res: Response) {
+  async deleteTable(req: Request, res: Response) {
     try {
-      restaurantService.deleteTable(req.auth!, String(req.params.id));
+      await restaurantService.deleteTable(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression table.');
     }
   },
 
-  transferTable(req: Request, res: Response) {
+  async transferTable(req: Request, res: Response) {
     try {
-      restaurantService.transferTable(
+      await restaurantService.transferTable(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -253,9 +253,9 @@ export const restaurantController = {
     }
   },
 
-  mergeTables(req: Request, res: Response) {
+  async mergeTables(req: Request, res: Response) {
     try {
-      restaurantService.mergeTables(
+      await restaurantService.mergeTables(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -266,9 +266,9 @@ export const restaurantController = {
     }
   },
 
-  updateTableStatus(req: Request, res: Response) {
+  async updateTableStatus(req: Request, res: Response) {
     try {
-      restaurantService.updateTableStatus(
+      await restaurantService.updateTableStatus(
         req.auth!.restaurantId!,
         String(req.params.id),
         req.body?.status,
@@ -279,9 +279,9 @@ export const restaurantController = {
     }
   },
 
-  regenerateTableQr(req: Request, res: Response) {
+  async regenerateTableQr(req: Request, res: Response) {
     try {
-      const result = restaurantService.regenerateTableQr(
+      const result = await restaurantService.regenerateTableQr(
         req.auth!,
         String(req.params.id),
       );
