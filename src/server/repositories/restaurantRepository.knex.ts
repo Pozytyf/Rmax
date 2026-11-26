@@ -10,21 +10,21 @@ export class KnexRestaurantStockRepository {
     return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
   }
 
-  async countCategories(rid: string): Promise<number> {
-    const row = await this.db('menu_categories').where({ restaurant_id: rid }).count({ count: '*' }).first();
+  async countCategories(rid: string, executor: Knex | Knex.Transaction = this.db): Promise<number> {
+    const row = await executor('menu_categories').where({ restaurant_id: rid }).count({ count: '*' }).first();
     return Number(row?.count || 0);
   }
 
-  async createCategory(rid: string, name: string, station: string, sortOrder: number): Promise<string> {
+  async createCategory(rid: string, name: string, station: string, sortOrder: number, executor: Knex | Knex.Transaction = this.db): Promise<string> {
     const id = this.id('cat');
-    await this.db('menu_categories').insert({
+    await executor('menu_categories').insert({
       id, restaurant_id: rid, name, station, sort_order: sortOrder, active: 1,
     });
     return id;
   }
 
-  async findCategory(categoryId: string, rid: string) {
-    const row = await this.db('menu_categories')
+  async findCategory(categoryId: string, rid: string, executor: Knex | Knex.Transaction = this.db) {
+    const row = await executor('menu_categories')
       .select({ id: 'id', name: 'name', station: 'station', sortOrder: 'sort_order', active: 'active' })
       .where({ id: categoryId, restaurant_id: rid }).first();
     return row || null;
@@ -33,6 +33,7 @@ export class KnexRestaurantStockRepository {
   async updateCategory(
     categoryId: string, rid: string,
     updates: { name?: string; station?: string; sortOrder?: number; active?: boolean },
+    executor: Knex | Knex.Transaction = this.db,
   ): Promise<number> {
     const patch: Record<string, unknown> = {};
     if (updates.name !== undefined) patch.name = updates.name;
@@ -40,27 +41,27 @@ export class KnexRestaurantStockRepository {
     if (updates.sortOrder !== undefined) patch.sort_order = updates.sortOrder;
     if (updates.active !== undefined) patch.active = updates.active ? 1 : 0;
     if (!Object.keys(patch).length) return 0;
-    return this.db('menu_categories').where({ id: categoryId, restaurant_id: rid }).update(patch);
+    return executor('menu_categories').where({ id: categoryId, restaurant_id: rid }).update(patch);
   }
 
-  async countItemsInCategory(categoryId: string, rid: string): Promise<number> {
-    const row = await this.db('menu_items').where({ category_id: categoryId, restaurant_id: rid }).count({ count: '*' }).first();
+  async countItemsInCategory(categoryId: string, rid: string, executor: Knex | Knex.Transaction = this.db): Promise<number> {
+    const row = await executor('menu_items').where({ category_id: categoryId, restaurant_id: rid }).count({ count: '*' }).first();
     return Number(row?.count || 0);
   }
 
-  async deleteCategory(categoryId: string, rid: string): Promise<number> {
-    return this.db('menu_categories').where({ id: categoryId, restaurant_id: rid }).del();
+  async deleteCategory(categoryId: string, rid: string, executor: Knex | Knex.Transaction = this.db): Promise<number> {
+    return executor('menu_categories').where({ id: categoryId, restaurant_id: rid }).del();
   }
 
   async createMenuItem(params: {
     rid: string; categoryId: string; name: string; description: string;
     priceXof: number; costPriceXof: number; imageUrl: string | null;
     available: boolean; sortOrder: number; optionsJson: string; optionGroupsJson?: string;
-  }): Promise<string> {
-    const category = await this.findCategory(params.categoryId, params.rid);
+  }, executor: Knex | Knex.Transaction = this.db): Promise<string> {
+    const category = await this.findCategory(params.categoryId, params.rid, executor);
     if (!category) throw new AppError(404, 'Catégorie introuvable pour cet établissement.');
     const id = this.id('itm');
-    await this.db('menu_items').insert({
+    await executor('menu_items').insert({
       id, restaurant_id: params.rid, category_id: params.categoryId,
       name: params.name, description: params.description,
       price_xof: params.priceXof, cost_price_xof: params.costPriceXof,
@@ -72,14 +73,14 @@ export class KnexRestaurantStockRepository {
     return id;
   }
 
-  async findMenuItemById(itemId: string, rid: string) {
-    const row = await this.db('menu_items')
+  async findMenuItemById(itemId: string, rid: string, executor: Knex | Knex.Transaction = this.db) {
+    const row = await executor('menu_items')
       .select('id', 'name').where({ id: itemId, restaurant_id: rid }).first();
     return row || null;
   }
 
-  async countOrderReferencesForMenuItem(itemId: string, rid: string): Promise<number> {
-    const row = await this.db('order_items as oi')
+  async countOrderReferencesForMenuItem(itemId: string, rid: string, executor: Knex | Knex.Transaction = this.db): Promise<number> {
+    const row = await executor('order_items as oi')
       .join('orders as o', 'o.id', 'oi.order_id')
       .where('o.restaurant_id', rid)
       .where('oi.menu_item_id', itemId)
@@ -87,8 +88,8 @@ export class KnexRestaurantStockRepository {
     return Number(row?.count || 0);
   }
 
-  async deleteMenuItem(itemId: string, rid: string): Promise<number> {
-    return this.db('menu_items').where({ id: itemId, restaurant_id: rid }).del();
+  async deleteMenuItem(itemId: string, rid: string, executor: Knex | Knex.Transaction = this.db): Promise<number> {
+    return executor('menu_items').where({ id: itemId, restaurant_id: rid }).del();
   }
 
   async updateMenuItem(
@@ -98,11 +99,11 @@ export class KnexRestaurantStockRepository {
       costPriceXof?: number; name?: string; description?: string;
       imageUrl?: string | null; sortOrder?: number;
       optionsJson?: string; optionGroupsJson?: string;
-    },
+    }, executor: Knex | Knex.Transaction = this.db,
   ): Promise<number> {
     const patch: Record<string, unknown> = {};
     if (updates.categoryId !== undefined) {
-      const category = await this.findCategory(updates.categoryId, rid);
+      const category = await this.findCategory(updates.categoryId, rid, executor);
       if (!category) throw new AppError(404, 'Catégorie introuvable pour cet établissement.');
       patch.category_id = updates.categoryId;
     }
@@ -116,11 +117,11 @@ export class KnexRestaurantStockRepository {
     if (updates.optionsJson !== undefined) patch.options_json = updates.optionsJson;
     if (updates.optionGroupsJson !== undefined) patch.option_groups_json = updates.optionGroupsJson;
     if (!Object.keys(patch).length) return 0;
-    return this.db('menu_items').where({ id: itemId, restaurant_id: rid }).update(patch);
+    return executor('menu_items').where({ id: itemId, restaurant_id: rid }).update(patch);
   }
 
-  async findStockById(stockId: string, rid: string) {
-    const row = await this.db('stocks')
+  async findStockById(stockId: string, rid: string, executor: Knex | Knex.Transaction = this.db) {
+    const row = await executor('stocks')
       .select({
         id: 'id', name: 'name', unit: 'unit', stockSection: 'stock_section',
         quantity: 'quantity', min_threshold: 'min_threshold',
