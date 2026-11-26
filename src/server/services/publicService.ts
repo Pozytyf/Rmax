@@ -1800,10 +1800,12 @@ export class PublicService extends BaseService<PublicRepository> {
   }
 
   async handlePaydunyaWebhook(body: Record<string, unknown>, signature?: string) {
-    const invoiceObj = body?.invoice && typeof body.invoice === 'object'
-      ? body.invoice as Record<string, unknown> : {};
-    const customData = body?.custom_data && typeof body.custom_data === 'object'
-      ? body.custom_data as Record<string, unknown>
+    const dataObj = body?.data && typeof body.data === 'object'
+      ? body.data as Record<string, unknown> : body;
+    const invoiceObj = dataObj?.invoice && typeof dataObj.invoice === 'object'
+      ? dataObj.invoice as Record<string, unknown> : {};
+    const customData = dataObj?.custom_data && typeof dataObj.custom_data === 'object'
+      ? dataObj.custom_data as Record<string, unknown>
       : invoiceObj.custom_data && typeof invoiceObj.custom_data === 'object'
         ? invoiceObj.custom_data as Record<string, unknown> : {};
     if (String(customData.payment_type || '').toUpperCase() === 'ORDER') {
@@ -1816,19 +1818,21 @@ export class PublicService extends BaseService<PublicRepository> {
     if (!verifyPaydunyaIpnSignature(body, signature)) {
       throw new AppError(401, 'Signature PayDunya invalide.');
     }
-    const invoiceObj = body?.invoice && typeof body.invoice === 'object'
-      ? body.invoice as Record<string, unknown> : {};
-    const customData = body?.custom_data && typeof body.custom_data === 'object'
-      ? body.custom_data as Record<string, unknown>
+    const dataObj = body?.data && typeof body.data === 'object'
+      ? body.data as Record<string, unknown> : body;
+    const invoiceObj = dataObj?.invoice && typeof dataObj.invoice === 'object'
+      ? dataObj.invoice as Record<string, unknown> : {};
+    const customData = dataObj?.custom_data && typeof dataObj.custom_data === 'object'
+      ? dataObj.custom_data as Record<string, unknown>
       : invoiceObj.custom_data && typeof invoiceObj.custom_data === 'object'
         ? invoiceObj.custom_data as Record<string, unknown> : {};
-    const token = String(invoiceObj.token || body.token || '').trim();
+    const token = String(invoiceObj.token || dataObj.token || '').trim();
     const paymentId = String(customData.payment_id || '').trim();
     const orderId = String(customData.order_id || '').trim();
     const restaurantId = String(customData.restaurant_id || '').trim();
     const amountFromCustom = Number(customData.amount_xof || 0);
     const currencyFromCustom = String(customData.currency || '').toUpperCase();
-    const status = String(body.status || invoiceObj.status || '').toLowerCase();
+    const status = String(dataObj.status || invoiceObj.status || '').toLowerCase();
 
     if (!token || !paymentId || !orderId || !restaurantId) {
       throw new AppError(400, 'Notification PayDunya incomplète : référence de paiement manquante.');
@@ -1856,7 +1860,7 @@ export class PublicService extends BaseService<PublicRepository> {
 
     const confirmation = await confirmPaydunyaInvoice(token);
     if (!confirmation.completed || confirmation.amountXof === undefined ||
-        confirmation.currency !== 'XOF' ||
+        (confirmation.currency || currencyFromCustom) !== 'XOF' ||
         confirmation.amountXof !== Number(payment.amount_xof) ||
         amountFromCustom !== Number(payment.amount_xof)) {
       throw new AppError(400, 'La confirmation PayDunya ne correspond pas au montant ou à la devise du paiement.');

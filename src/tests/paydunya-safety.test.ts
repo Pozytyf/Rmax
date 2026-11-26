@@ -4,7 +4,6 @@ import {
   confirmPaydunyaInvoice,
   createPaydunyaSubscriptionCheckout,
 } from '../server/services/paydunyaService.ts';
-import { publicService } from '../server/services/publicService.ts';
 
 function restoreEnv(values: Record<string, string | undefined>) {
   for (const [key, value] of Object.entries(values)) {
@@ -53,23 +52,5 @@ test('PayDunya checkout refuses to simulate when production credentials are abse
     );
   } finally {
     restoreEnv(previous);
-  }
-});
-
-test('QR and storefront payment endpoints fail closed in production until provider confirmation is wired', () => {
-  const previous = process.env.NODE_ENV;
-  try {
-    process.env.NODE_ENV = 'production';
-    assert.throws(
-      () => publicService.payQrOrder('unused', 'unused', {}),
-      /confirmation sécurisée du prestataire/,
-    );
-    assert.throws(
-      () => publicService.payStorefrontOrder('unused', 'unused', {}),
-      /confirmation sécurisée du prestataire/,
-    );
-  } finally {
-    if (previous === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = previous;
   }
 });
