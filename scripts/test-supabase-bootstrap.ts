@@ -56,6 +56,7 @@ async function main(): Promise<void> {
       'users',
       'sessions',
       'auth_tokens',
+      'roles',
       'orders',
       'order_items',
       'payments',
@@ -71,6 +72,9 @@ async function main(): Promise<void> {
       'staff_shifts',
       'staff_time_clocks',
       'b2b_invoices',
+      'purchase_orders',
+      'purchase_order_items',
+      'whatsapp_logs',
     ];
     for (const table of requiredTables) {
       const result = await client.query(
