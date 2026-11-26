@@ -206,6 +206,15 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(tenantRlsMigrationSql.includes('REVOKE ALL ON TABLE public.users FROM anon, authenticated'), true);
   assert.equal(tenantRlsMigrationSql.includes('CREATE POLICY tenant_isolation_orders'), true);
 
+  const denyInternalMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260014_deny_api_access_to_internal_tables.sql',
+  );
+  assert.equal(fs.existsSync(denyInternalMigrationPath), true);
+  const denyInternalMigrationSql = fs.readFileSync(denyInternalMigrationPath, 'utf8');
+  assert.equal(denyInternalMigrationSql.includes('USING (FALSE) WITH CHECK (FALSE)'), true);
+  assert.equal(schemaSql.includes('deny_api_access_users'), true);
+
   const seedSql = fs.readFileSync(seedPath, 'utf8');
   assert.equal(seedSql.includes('rest_sillage_01'), true);
   assert.equal(seedSql.includes('proprietaire@lesillage.ci'), true);
