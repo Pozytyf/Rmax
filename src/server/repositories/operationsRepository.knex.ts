@@ -8,6 +8,10 @@ import type { B2bInvoice, CashRegisterSession, CustomerReview, InventoryCount, M
 export class KnexOperationsReadRepository {
   constructor(private readonly db: Knex = getKnex()) {}
 
+  private id(prefix: string): string {
+    return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+  }
+
   async findCombos(rid: string, onlyActive = false): Promise<MenuCombo[]> {
     let query = this.db('menu_combos').where({ restaurant_id: rid });
     if (onlyActive) query = query.where({ active: 1 });
@@ -375,6 +379,261 @@ export class KnexOperationsReadRepository {
       loyaltyPoints: nextPoints,
       appliedDelta,
     };
+  }
+
+  async createInventoryCount(
+    trx: Knex.Transaction,
+    params: {
+      restaurantId: string; title: string; stockSection: 'ALL' | 'KITCHEN' | 'BEVERAGE';
+      notes: string; createdByName: string; userId: string | null;
+      lines: Array<{ stockId: string; countedQty: number }>;
+    },
+  ): Promise<{ id: string; totalVarianceXof: number }> {
+    const id = this.id('inv_cnt');
+    const now = new Date().toISOString();
+    let totalVarianceXof = 0;
+    await trx('inventory_counts').insert({
+      id, restaurant_id: params.restaurantId, title: params.title,
+      stock_section: params.stockSection, status: 'VALIDATED',
+      notes: params.notes, total_variance_xof: 0,
+      created_by_name: params.createdByName, validated_at: now, created_at: now,
+    });
+    for (const line of params.lines) {
+      if (!line.stockId || !Number.isFinite(line.countedQty) || line.countedQty < 0) {
+        throw new AppError(400, 'Quantité comptée invalide.');
+      }
+      const stock = await trx('stocks')
+        .select('id', 'name', 'unit', 'stock_section', 'quantity', 'unit_cost_xof')
+        .where({ id: line.stockId, restaurant_id: params.restaurantId })
+        .forUpdate()
+        .first();
+      if (!stock) throw new AppError(404, 'Ingrédient introuvable pour cet établissement.');
+      const section = String(stock.stock_section || 'KITCHEN');
+      if (params.stockSection !== 'ALL' && section !== params.stockSection) {
+        throw new AppError(400, `L’article « ${String(stock.name)} » n’appartient pas à la section ${params.stockSection === 'BEVERAGE' ? 'Boissons' : 'Cuisine'}.`);
+      }
+      const expectedQty = Number(stock.quantity || 0);
+      const countedQty = Math.round(line.countedQty * 1000) / 1000;
+      const varianceQty = Math.round((countedQty - expectedQty) * 1000) / 1000;
+      const unitCostXof = Number(stock.unit_cost_xof || 0);
+      const varianceXof = Math.round(varianceQty * unitCostXof);
+      totalVarianceXof += varianceXof;
+      await trx('inventory_count_lines').insert({
+        id: this.id('icl'), inventory_count_id: id,
+        stock_id: String(stock.id), stock_name: String(stock.name),
+        unit: String(stock.unit), expected_qty: expectedQty,
+        counted_qty: countedQty, variance_qty: varianceQty,
+        unit_cost_xof: unitCostXof, variance_xof: varianceXof,
+      });
+      if (varianceQty !== 0) {
+        await trx('stocks').where({ id: stock.id, restaurant_id: params.restaurantId })
+          .update({ quantity: countedQty, updated_at: now });
+        await trx('stock_movements').insert({
+          id: this.id('smv'), restaurant_id: params.restaurantId,
+          stock_id: String(stock.id), movement_type: 'INVENTORY',
+          quantity_delta: varianceQty, reason: `Inventaire : ${params.title}`,
+          waste_category: '', created_by_user_id: params.userId, created_at: now,
+        });
+      }
+    }
+    await trx('inventory_counts')
+      .where({ id, restaurant_id: params.restaurantId })
+      .update({ total_variance_xof: totalVarianceXof });
+    return { id, totalVarianceXof };
+  }
+
+  async recordTypedWaste(
+    trx: Knex.Transaction,
+    params: { restaurantId: string; stockId: string; quantity: number; category: string; reason: string; userId: string | null },
+  ): Promise<{ quantity: number; stockName: string }> {
+    const stock = await trx('stocks')
+      .select('id', 'name', 'quantity')
+      .where({ id: params.stockId, restaurant_id: params.restaurantId })
+      .forUpdate()
+      .first();
+    if (!stock) throw new AppError(404, 'Ingrédient introuvable.');
+    const delta = Math.round(params.quantity * 1000) / 1000;
+    const current = Number(stock.quantity || 0);
+    if (delta > current) {
+      throw new AppError(409, `Stock insuffisant pour enregistrer cette perte : disponible ${current}, demandé ${delta}.`);
+    }
+    const next = Math.round((current - delta) * 1000) / 1000;
+    const now = new Date().toISOString();
+    const updated = await trx('stocks')
+      .where({ id: params.stockId, restaurant_id: params.restaurantId })
+      .where('quantity', '>=', delta)
+      .update({ quantity: next, updated_at: now });
+    if (updated !== 1) throw new AppError(409, 'Le stock a changé pendant l’enregistrement de la perte. Réessayez.');
+    await trx('stock_movements').insert({
+      id: this.id('smv'), restaurant_id: params.restaurantId,
+      stock_id: params.stockId, movement_type: 'WASTE',
+      quantity_delta: -delta, reason: params.reason,
+      waste_category: params.category, created_by_user_id: params.userId,
+      created_at: now,
+    });
+    return { quantity: next, stockName: String(stock.name) };
+  }
+
+  async findClockMember(restaurantId: string, userId: string) {
+    const row = await this.db('restaurant_members as rm')
+      .join('users as u', 'u.id', 'rm.user_id')
+      .select({
+        userId: 'u.id', fullName: 'u.full_name', pinHash: 'u.pin_hash',
+        userStatus: 'u.status', role: 'rm.role', memberStatus: 'rm.status',
+      })
+      .where('rm.restaurant_id', restaurantId)
+      .where('rm.user_id', userId)
+      .first();
+    return row || null;
+  }
+
+  async toggleStaffClock(
+    trx: Knex.Transaction,
+    params: {
+      restaurantId: string; userId: string; action: string;
+      notes: string; actorUserId: string | null; actorEmail: string; actorRole: string;
+    },
+  ): Promise<{ action: 'CLOCK_IN' | 'CLOCK_OUT'; staffName: string; durationMinutes: number; clock: StaffTimeClock }> {
+    // Serialize clock actions per employee, including the first clock-in where no clock row exists yet.
+    const user = await trx('users').select('id').where({ id: params.userId }).forUpdate().first();
+    if (!user) throw new AppError(404, 'Employé introuvable.');
+    const member = await trx('restaurant_members as rm')
+      .join('users as u', 'u.id', 'rm.user_id')
+      .select({ fullName: 'u.full_name', userStatus: 'u.status', role: 'rm.role', memberStatus: 'rm.status' })
+      .where('rm.restaurant_id', params.restaurantId)
+      .where('rm.user_id', params.userId)
+      .first();
+    if (!member || member.userStatus !== 'ACTIVE' || member.memberStatus !== 'ACTIVE') {
+      throw new AppError(403, 'Compte employé suspendu ou non rattaché à cet établissement.');
+    }
+    const open = await trx('staff_time_clocks')
+      .where({ restaurant_id: params.restaurantId, user_id: params.userId })
+      .whereNull('clock_out_at')
+      .orderBy('clock_in_at', 'desc')
+      .forUpdate()
+      .first();
+    if (params.action === 'IN' && open) throw new AppError(409, `${String(member.fullName)} a déjà pointé son entrée.`);
+    if (params.action === 'OUT' && !open) throw new AppError(409, `${String(member.fullName)} n’a pas de pointage d’entrée actif.`);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    let action: 'CLOCK_IN' | 'CLOCK_OUT';
+    let id: string;
+    let durationMinutes = 0;
+    if (open) {
+      id = String(open.id);
+      durationMinutes = Math.max(1, Math.round((now.getTime() - new Date(String(open.clock_in_at)).getTime()) / 60000));
+      await trx('staff_time_clocks')
+        .where({ id, restaurant_id: params.restaurantId, user_id: params.userId })
+        .whereNull('clock_out_at')
+        .update({
+          clock_out_at: nowIso, duration_minutes: durationMinutes,
+          notes: params.notes || String(open.notes || ''),
+        });
+      action = 'CLOCK_OUT';
+    } else {
+      id = this.id('clk');
+      await trx('staff_time_clocks').insert({
+        id, restaurant_id: params.restaurantId, user_id: params.userId,
+        staff_name: String(member.fullName), role: String(member.role),
+        clock_in_at: nowIso, duration_minutes: 0, notes: params.notes,
+      });
+      action = 'CLOCK_IN';
+    }
+    const row = await trx('staff_time_clocks')
+      .where({ id, restaurant_id: params.restaurantId, user_id: params.userId }).first();
+    if (!row) throw new Error('Pointage introuvable après écriture.');
+    return {
+      action, staffName: String(member.fullName), durationMinutes,
+      clock: {
+        id: String(row.id), restaurantId: String(row.restaurant_id),
+        userId: String(row.user_id), staffName: String(row.staff_name),
+        role: String(row.role) as StaffTimeClock['role'],
+        clockInAt: String(row.clock_in_at),
+        clockOutAt: row.clock_out_at ? String(row.clock_out_at) : null,
+        durationMinutes: Number(row.duration_minutes || 0), notes: String(row.notes || ''),
+      },
+    };
+  }
+
+  async createB2bInvoice(
+    trx: Knex.Transaction,
+    params: {
+      restaurantId: string; id: string; docType: 'PROFORMA' | 'INVOICE';
+      clientName: string; clientCompany: string; clientTaxId: string;
+      clientEmail: string; clientPhone: string; clientAddress: string;
+      items: B2bInvoice['items']; subtotalHtXof: number; taxRatePercent: number;
+      taxXof: number; totalTtcXof: number; status: B2bInvoice['status'];
+      dueDate: string | null; notes: string;
+    },
+  ): Promise<B2bInvoice> {
+    const restaurant = await trx('restaurants').select('id').where({ id: params.restaurantId }).forUpdate().first();
+    if (!restaurant) throw new AppError(404, 'Établissement introuvable.');
+    const sequenceRow = await trx('b2b_invoices')
+      .where({ restaurant_id: params.restaurantId, doc_type: params.docType })
+      .whereRaw('EXTRACT(YEAR FROM CAST(created_at AS timestamp)) = ?', [new Date().getFullYear()])
+      .count({ count: '*' }).first();
+    const sequence = Number(sequenceRow?.count || 0) + 1;
+    const prefix = params.docType === 'INVOICE' ? 'FACT' : 'PROF';
+    const tenantCode = params.restaurantId.replace(/[^a-z0-9]/gi, '').slice(-6).toUpperCase();
+    const invoiceNumber = `${prefix}-${new Date().getFullYear()}-${tenantCode}-${String(sequence).padStart(4, '0')}`;
+    const now = new Date().toISOString();
+    await trx('b2b_invoices').insert({
+      id: params.id, restaurant_id: params.restaurantId,
+      invoice_number: invoiceNumber, doc_type: params.docType,
+      client_name: params.clientName, client_company: params.clientCompany,
+      client_tax_id: params.clientTaxId, client_email: params.clientEmail,
+      client_phone: params.clientPhone, client_address: params.clientAddress,
+      items_json: JSON.stringify(params.items), subtotal_ht_xof: params.subtotalHtXof,
+      tax_rate_percent: params.taxRatePercent, tax_xof: params.taxXof,
+      total_ttc_xof: params.totalTtcXof, status: params.status,
+      due_date: params.dueDate, notes: params.notes, created_at: now,
+    });
+    const row = await trx('b2b_invoices').where({ id: params.id, restaurant_id: params.restaurantId }).first();
+    if (!row) throw new Error('Document B2B créé introuvable.');
+    return (await this.findB2bInvoices(params.restaurantId)).find((item) => item.id === params.id)!;
+  }
+
+  async updateB2bInvoiceStatus(restaurantId: string, id: string, status: B2bInvoice['status'], trx: Knex | Knex.Transaction = this.db): Promise<number> {
+    return trx('b2b_invoices').where({ id, restaurant_id: restaurantId }).update({ status });
+  }
+
+  async convertProformaToInvoice(
+    trx: Knex.Transaction,
+    params: { restaurantId: string; proformaId: string; newId: string },
+  ): Promise<{ invoice: B2bInvoice; sourceInvoiceNumber: string }> {
+    const restaurant = await trx('restaurants').select('id').where({ id: params.restaurantId }).forUpdate().first();
+    if (!restaurant) throw new AppError(404, 'Établissement introuvable.');
+    const source = await trx('b2b_invoices')
+      .where({ id: params.proformaId, restaurant_id: params.restaurantId })
+      .forUpdate().first();
+    if (!source) throw new AppError(404, 'Devis proforma introuvable.');
+    if (source.doc_type === 'INVOICE') throw new AppError(409, 'Ce document est déjà une facture définitive.');
+    const sequenceRow = await trx('b2b_invoices')
+      .where({ restaurant_id: params.restaurantId, doc_type: 'INVOICE' })
+      .whereRaw('EXTRACT(YEAR FROM CAST(created_at AS timestamp)) = ?', [new Date().getFullYear()])
+      .count({ count: '*' }).first();
+    const sequence = Number(sequenceRow?.count || 0) + 1;
+    const tenantCode = params.restaurantId.replace(/[^a-z0-9]/gi, '').slice(-6).toUpperCase();
+    const invoiceNumber = `FACT-${new Date().getFullYear()}-${tenantCode}-${String(sequence).padStart(4, '0')}`;
+    const now = new Date().toISOString();
+    await trx('b2b_invoices').where({ id: params.proformaId, restaurant_id: params.restaurantId, doc_type: 'PROFORMA' })
+      .update({ status: 'ACCEPTED' });
+    await trx('b2b_invoices').insert({
+      id: params.newId, restaurant_id: params.restaurantId,
+      invoice_number: invoiceNumber, doc_type: 'INVOICE',
+      client_name: source.client_name, client_company: source.client_company,
+      client_tax_id: source.client_tax_id, client_email: source.client_email,
+      client_phone: source.client_phone, client_address: source.client_address,
+      items_json: source.items_json, subtotal_ht_xof: source.subtotal_ht_xof,
+      tax_rate_percent: source.tax_rate_percent, tax_xof: source.tax_xof,
+      total_ttc_xof: source.total_ttc_xof, status: 'SENT',
+      due_date: source.due_date,
+      notes: `Convertie depuis ${String(source.invoice_number)}${source.notes ? ` · ${String(source.notes)}` : ''}`,
+      created_at: now,
+    });
+    const invoice = (await this.findB2bInvoices(params.restaurantId)).find((item) => item.id === params.newId);
+    if (!invoice) throw new Error('Facture convertie introuvable.');
+    return { invoice, sourceInvoiceNumber: String(source.invoice_number) };
   }
 
   async findInventoryCounts(rid: string): Promise<InventoryCount[]> {
