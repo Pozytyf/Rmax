@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { Knex } from 'knex';
+import { AppError } from '../services/errors.ts';
 import { getKnex } from '../knex.ts';
 import { mapPromotionRow } from '../services/pricingEngine.ts';
 import type { B2bInvoice, CustomerReview, InventoryCount, MenuCombo, Promotion, StaffShift, StaffTimeClock, TableCall } from '../../types/index.ts';
@@ -190,6 +191,37 @@ export class KnexOperationsReadRepository {
     return this.db('customer_reviews')
       .where({ id, restaurant_id: rid })
       .update({ reply });
+  }
+
+  async adjustCustomerLoyalty(
+    trx: Knex.Transaction,
+    params: { restaurantId: string; customerId: string; pointsDelta: number; reason: string; now: string },
+  ) {
+    const customer = await trx('customers')
+      .select('id', 'full_name', 'loyalty_points')
+      .where({ id: params.customerId, restaurant_id: params.restaurantId })
+      .forUpdate()
+      .first();
+    if (!customer) return null;
+    const currentPoints = Number(customer.loyalty_points || 0);
+    const nextPoints = Math.max(0, currentPoints + params.pointsDelta);
+    const appliedDelta = nextPoints - currentPoints;
+    if (appliedDelta === 0) {
+      throw new AppError(409, 'Le solde de points ne permet pas cet ajustement.');
+    }
+    await trx('customers')
+      .where({ id: params.customerId, restaurant_id: params.restaurantId })
+      .update({ loyalty_points: nextPoints });
+    await trx('loyalty_transactions').insert({
+      id: this.id('ltx'), restaurant_id: params.restaurantId,
+      customer_id: params.customerId, order_id: null,
+      points_delta: appliedDelta, reason: params.reason, created_at: params.now,
+    });
+    return {
+      fullName: String(customer.full_name || ''),
+      loyaltyPoints: nextPoints,
+      appliedDelta,
+    };
   }
 
   async findInventoryCounts(rid: string): Promise<InventoryCount[]> {
