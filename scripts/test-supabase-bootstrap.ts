@@ -53,10 +53,13 @@ async function main(): Promise<void> {
     // Validate the complete bootstrap path: base schema plus the same
     // operational/RLS migrations applied to an existing Supabase project.
     for (const migration of [
+      '202611260010_revoke_public_rls_trigger_execute.sql',
       '202611260011_add_operations_schema_and_rls.sql',
       '202611260012_pin_tenant_function_search_path.sql',
       '202611260013_apply_existing_tenant_rls.sql',
       '202611260014_deny_api_access_to_internal_tables.sql',
+      '202611260015_index_operational_foreign_keys.sql',
+      '202611260017_add_option_groups_json_to_menu_items.sql',
     ]) {
       const migrationPath = path.resolve(process.cwd(), 'supabase/migrations', migration);
       await client.query(await fs.readFile(migrationPath, 'utf8'));
@@ -95,6 +98,11 @@ async function main(): Promise<void> {
       );
       assert.equal(result.rows[0]?.exists, true, `Bootstrap schema is missing ${table}`);
     }
+
+    const optionGroupsColumn = await client.query(
+      "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'menu_items' AND column_name = 'option_groups_json') AS exists",
+    );
+    assert.equal(optionGroupsColumn.rows[0]?.exists, true, 'Bootstrap schema is missing menu_items.option_groups_json');
 
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",

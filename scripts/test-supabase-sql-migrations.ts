@@ -20,6 +20,7 @@ const migrationFiles = [
   '202611260013_apply_existing_tenant_rls.sql',
   '202611260014_deny_api_access_to_internal_tables.sql',
   '202611260015_index_operational_foreign_keys.sql',
+  '202611260017_add_option_groups_json_to_menu_items.sql',
 ];
 
 async function main(): Promise<void> {
