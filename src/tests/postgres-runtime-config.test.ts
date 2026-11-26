@@ -74,7 +74,7 @@ test('all production runtimes refuse SQLite configuration', () => {
     delete process.env.VERCEL;
     assert.throws(
       () => buildKnexConfig('/tmp/restomax-test.db'),
-      /SQLite ne peut pas être utilisé en production/,
+      /SQLite ne peut pas être utilisé comme base métier en production/,
     );
   } finally {
     if (previous.client === undefined) delete process.env.DATABASE_CLIENT;
