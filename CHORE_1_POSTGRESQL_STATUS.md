@@ -2,7 +2,7 @@
 
 Branche de travail : `fix/chore-1-postgresql-persistence`
 Merge request : !1 (Draft)
-Dernier pipeline complet validé : [3117663334](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117648302)
+Dernier pipeline entièrement vert : [3117648302](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117648302). Les modifications ultérieures de lecture publique ont été poussées, mais leur dernière intégration PostgreSQL n'a pas pu être relancée après épuisement du quota CI.
 
 ## Chantier 1 — PostgreSQL et persistance
 
