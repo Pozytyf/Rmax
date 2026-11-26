@@ -163,6 +163,22 @@ export class KnexAuthRepository {
     trialEndsAt: string; sessionId: string; sessionExpiresAt: string;
     userAgent: string; now: string;
   }, trx: Executor): Promise<void> {
+    // The users.tenant_id foreign key targets tenants, not restaurants.
+    // Keep the tenant root and the application-facing restaurant row aligned.
+    await trx('tenants').insert({
+      id: params.restaurantId,
+      name: params.restaurantName,
+      slug: params.slug,
+      email: params.email,
+      phone: params.phone,
+      city: params.city,
+      country: "Côte d'Ivoire",
+      currency: 'XOF',
+      timezone: 'Africa/Abidjan',
+      status: 'TRIAL',
+      created_at: params.now,
+    });
+
     await trx('restaurants').insert({
       id: params.restaurantId,
       name: params.restaurantName,
@@ -267,7 +283,7 @@ export class KnexAuthRepository {
     return trx('users').where({ id: userId }).update({
       password_hash: passwordHash,
       updated_at: new Date().toISOString(),
-      token_version: trx.client.config.client === 'pg' ? trx.raw('token_version + 1') : trx.raw('token_version + 1'),
+      token_version: trx.raw('token_version + 1'),
     });
   }
 
