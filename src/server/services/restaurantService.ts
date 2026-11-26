@@ -43,6 +43,7 @@ import {
 import { operationsRepository } from '../repositories/operationsRepository.ts';
 import { knexRestaurantStockRepository } from '../repositories/restaurantRepository.knex.ts';
 import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
+import { applyOrderPromoAndLoyaltyDiscountsKnex, loadActivePromotionsKnex } from './pricingEngine.knex.ts';
 import type { Permission, PrinterSettings, Role } from '../../types/index.ts';
 
 const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
@@ -636,8 +637,189 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       : restaurantRepository.findOrdersWithItems(rid);
   }
 
+  private async createPosOrderPostgres(auth: AuthContext, body: Record<string, unknown>) {
+    const rid = auth.restaurantId!;
+    const {
+      orderType, tableId, customerName, customerPhone, discountXof,
+      promoCode, loyaltyPointsToUse, notes, items, combos, idempotencyKey,
+    } = body || {};
+    const rawItems = Array.isArray(items) ? items : [];
+    const rawCombos = Array.isArray(combos) ? [...combos] : [];
+    if (rawItems.length === 0 && rawCombos.length === 0) {
+      throw new AppError(400, 'La commande doit contenir au moins un article ou une formule.');
+    }
+    const now = new Date().toISOString();
+    const idempotency = idempotencyKey ? String(idempotencyKey).trim().slice(0, 180) : null;
+    const result = await getKnex().transaction(async (trx) => {
+      const restaurant = await trx('restaurants')
+        .select('id', 'tax_rate_percent')
+        .where({ id: rid }).forUpdate().first();
+      if (!restaurant) throw new AppError(404, 'Établissement introuvable.');
+      if (idempotency) {
+        const existing = await knexRestaurantStockRepository.findOrderByIdempotencyKey(rid, idempotency, trx);
+        if (existing) return {
+          deduplicated: true,
+          order: existing,
+          lowStocksTriggered: [],
+        };
+      }
+      const orderId = generateId('ord');
+      const count = await knexRestaurantStockRepository.countOrders(rid, trx);
+      const orderNumber = `CMD-${1001 + count}`;
+      const cleanTableId = tableId ? String(tableId) : null;
+      if (cleanTableId) {
+        const table = await knexRestaurantStockRepository.findTableById(cleanTableId, rid, trx);
+        if (!table) throw new AppError(404, 'Table introuvable pour cet établissement.');
+      }
+      const activePromos = await loadActivePromotionsKnex(trx, rid);
+      let grossXof = 0;
+      const lines: Array<{
+        id: string; menuItemId: string; name: string; station: string;
+        unitPriceXof: number; optionsSummary: string; optionsDeltaXof: number;
+        quantity: number; lineTotalXof: number; notes: string;
+      }> = [];
+      const recipeDeductItems: Array<{ menuItemId: string; quantity: number }> = [];
+
+      for (const rawLine of rawItems) {
+        const line = rawLine as {
+          menuItemId?: unknown; comboId?: unknown; quantity?: unknown;
+          optionIds?: unknown; notes?: unknown;
+        };
+        if (line.comboId) {
+          rawCombos.push({ comboId: line.comboId, quantity: line.quantity, notes: line.notes });
+          continue;
+        }
+        const quantity = Math.max(1, Math.min(100, Math.floor(Number(line.quantity) || 1)));
+        const menuItem = await knexRestaurantStockRepository.findMenuItemWithStation(
+          String(line.menuItemId || ''), rid, trx,
+        );
+        if (!menuItem || !Number(menuItem.available)) {
+          throw new AppError(400, 'Article indisponible dans le catalogue.');
+        }
+        const optionIds: string[] = Array.isArray(line.optionIds) ? line.optionIds.map(String) : [];
+        const { optionsSummary, optionsDeltaXof } = resolveItemOptionsSelection({
+          itemName: String(menuItem.name),
+          legacyOptionsJson: menuItem.options_json,
+          optionGroupsJson: menuItem.option_groups_json,
+          selectedOptionIds: optionIds,
+        });
+        const happyHour = computeHappyHourForItem({
+          basePriceXof: Number(menuItem.price_xof),
+          categoryId: String(menuItem.category_id),
+          promotions: activePromos,
+        });
+        const lineTotal = (happyHour.effectivePriceXof + optionsDeltaXof) * quantity;
+        grossXof += lineTotal;
+        lines.push({
+          id: generateId('oi'), menuItemId: String(menuItem.id),
+          name: happyHour.promoLabel ? `${String(menuItem.name)} (${happyHour.promoLabel})` : String(menuItem.name),
+          station: String(menuItem.station || 'KITCHEN'),
+          unitPriceXof: happyHour.effectivePriceXof, optionsSummary,
+          optionsDeltaXof, quantity, lineTotalXof: lineTotal,
+          notes: String(line.notes || '').slice(0, 200),
+        });
+        recipeDeductItems.push({ menuItemId: String(menuItem.id), quantity });
+      }
+
+      if (rawCombos.length) {
+        const fallback = await trx('menu_items').select('id').where({ restaurant_id: rid }).first();
+        for (const rawCombo of rawCombos) {
+          const comboInput = (rawCombo || {}) as { comboId?: unknown; quantity?: unknown; notes?: unknown };
+          const combo = await knexOperationsReadRepository.findComboById(
+            String(comboInput.comboId || ''), rid, trx,
+          );
+          if (!combo || !combo.active) throw new AppError(400, 'Formule indisponible.');
+          const quantity = Math.max(1, Math.min(50, Math.floor(Number(comboInput.quantity || 1))));
+          const linkedMenuItemId = combo.items.find((item) => item.menuItemId)?.menuItemId || fallback?.id;
+          if (!linkedMenuItemId) {
+            throw new AppError(400, 'La formule doit être rattachée à au moins un plat du catalogue.');
+          }
+          const lineTotal = combo.priceXof * quantity;
+          grossXof += lineTotal;
+          lines.push({
+            id: generateId('oi'), menuItemId: String(linkedMenuItemId),
+            name: `Formule · ${combo.name}`, station: 'KITCHEN',
+            unitPriceXof: combo.priceXof,
+            optionsSummary: combo.items.map((item) => `${item.quantity}x ${item.label}`).join(' + '),
+            optionsDeltaXof: 0, quantity, lineTotalXof: lineTotal,
+            notes: String(comboInput.notes || '').slice(0, 200),
+          });
+          for (const item of combo.items) {
+            if (item.menuItemId) recipeDeductItems.push({
+              menuItemId: item.menuItemId, quantity: item.quantity * quantity,
+            });
+          }
+        }
+      }
+
+      const promoLoyalty = await applyOrderPromoAndLoyaltyDiscountsKnex({
+        trx, restaurantId: rid, grossXof,
+        manualDiscountXof: Number(discountXof || 0),
+        promoCode: promoCode ? String(promoCode) : undefined,
+        customerPhone: customerPhone ? String(customerPhone) : undefined,
+        loyaltyPointsToUse: Number(loyaltyPointsToUse || 0),
+        orderId, orderNumber, nowIso: now,
+      });
+      const totalXof = Math.max(0, grossXof - promoLoyalty.discountXof);
+      const taxRate = Number(restaurant.tax_rate_percent || 18);
+      const subtotalXof = Math.round(totalXof / (1 + taxRate / 100));
+      const taxXof = totalXof - subtotalXof;
+      const resolvedOrderType = ['TAKEAWAY', 'DELIVERY', 'CLICK_COLLECT'].includes(String(orderType))
+        ? String(orderType) : 'DINE_IN';
+      await knexRestaurantStockRepository.insertPosOrder(trx, {
+        orderId, rid, orderNumber, orderType: resolvedOrderType,
+        tableId: cleanTableId, customerName: String(customerName || 'Client sur place').slice(0, 80),
+        customerPhone: String(customerPhone || '').slice(0, 30),
+        promoCode: promoLoyalty.appliedPromoCode,
+        loyaltyPointsUsed: promoLoyalty.loyaltyPointsUsed,
+        subtotalXof, discountXof: promoLoyalty.discountXof, taxXof, totalXof,
+        notes: String(notes || '').slice(0, 300), idempotencyKey: idempotency,
+        userId: auth.userId, now, lines,
+      });
+      const deduction = await knexRestaurantStockRepository.deductStocksForOrderItems(trx, {
+        rid, orderNumber, items: recipeDeductItems, userId: auth.userId, now,
+      });
+      await recordAuditWithKnex(trx, {
+        actorUserId: auth.userId, actorEmail: auth.email,
+        actorRole: auth.role, restaurantId: rid,
+        action: 'POS_ORDER_CREATED', targetType: 'ORDER',
+        targetId: orderId, details: `${orderNumber} · ${totalXof} FCFA · ${lines.length} ligne(s)`,
+      });
+      return {
+        deduplicated: false,
+        order: {
+          id: orderId, orderNumber, discountXof: promoLoyalty.discountXof,
+          totalXof, status: 'PENDING', items: lines,
+        },
+        lowStocksTriggered: deduction.lowStocksTriggered,
+        deductedCount: deduction.deductedCount,
+      };
+    });
+
+    if (result.deduplicated) return { order: result.order, deduplicated: true };
+    if (result.deductedCount > 0) {
+      broadcastRestaurantEvent(rid, 'stock:updated', {
+        orderId: result.order.id, orderNumber: result.order.orderNumber,
+        deductedCount: result.deductedCount,
+      });
+      for (const low of result.lowStocksTriggered) {
+        await this.dispatchCriticalStockAlert({
+          restaurantId: rid, auth, stockId: low.id, stockName: low.name,
+          quantity: low.quantity, minThreshold: low.minThreshold,
+          unit: low.unit, supplierName: low.supplierName,
+        });
+      }
+    }
+    broadcastRestaurantEvent(rid, 'order:created', {
+      orderId: result.order.id, orderNumber: result.order.orderNumber,
+      totalXof: result.order.totalXof,
+    });
+    return { deduplicated: false, order: result.order };
+  }
+
   async createPosOrder(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) return this.createPosOrderPostgres(auth, body);
     const {
       orderType,
       tableId,
