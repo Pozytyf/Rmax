@@ -14,9 +14,9 @@ export const restaurantController = {
     }
   },
 
-  getMenu(req: Request, res: Response) {
+  async getMenu(req: Request, res: Response) {
     try {
-      const menu = restaurantService.getMenu(req.auth!.restaurantId!);
+      const menu = await restaurantService.getMenu(req.auth!.restaurantId!);
       res.json(menu);
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement menu.');
