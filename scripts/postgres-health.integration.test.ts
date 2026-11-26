@@ -447,6 +447,81 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal(String(settledOrder?.status), 'SERVED');
 
 
+    const transferSource = await db.transaction((trx) =>
+      knexRestaurantStockRepository.createTableWithQr(trx, {
+        rid: restaurantId, zone: 'Test', label: 'Transfert source',
+        capacity: 2, shape: 'ROUND',
+      }),
+    );
+    const transferTarget = await db.transaction((trx) =>
+      knexRestaurantStockRepository.createTableWithQr(trx, {
+        rid: restaurantId, zone: 'Test', label: 'Transfert cible',
+        capacity: 2, shape: 'RECT',
+      }),
+    );
+    const mergeSource = await db.transaction((trx) =>
+      knexRestaurantStockRepository.createTableWithQr(trx, {
+        rid: restaurantId, zone: 'Test', label: 'Fusion source',
+        capacity: 2, shape: 'ROUND',
+      }),
+    );
+    await db.transaction((trx) => knexRestaurantStockRepository.insertPosOrder(trx, {
+      orderId: `it_transfer_order_${suffix}`, rid: restaurantId,
+      orderNumber: `IT-TRANSFER-${suffix.slice(0, 5)}`,
+      orderType: 'DINE_IN', tableId: transferSource.tableId,
+      customerName: 'Transfert', subtotalXof: 1000, discountXof: 0,
+      taxXof: 0, totalXof: 1000, notes: '', idempotencyKey: null,
+      userId, now, lines: [{
+        id: `it_transfer_line_${suffix}`, menuItemId,
+        name: 'Transfert', station: 'KITCHEN', unitPriceXof: 1000,
+        optionsSummary: '', optionsDeltaXof: 0, quantity: 1,
+        lineTotalXof: 1000, notes: '',
+      }],
+    }));
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.transferTableOrders(
+        trx, restaurantId, transferSource.tableId, transferTarget.tableId,
+      ),
+    );
+    assert.equal(String((await db('orders').where({ id: `it_transfer_order_${suffix}` }).first())?.table_id), transferTarget.tableId);
+
+    await db.transaction((trx) => knexRestaurantStockRepository.insertPosOrder(trx, {
+      orderId: `it_merge_order_${suffix}`, rid: restaurantId,
+      orderNumber: `IT-MERGE-${suffix.slice(0, 5)}`,
+      orderType: 'DINE_IN', tableId: mergeSource.tableId,
+      customerName: 'Fusion', subtotalXof: 500, discountXof: 0,
+      taxXof: 0, totalXof: 500, notes: 'source', idempotencyKey: null,
+      userId, now, lines: [{
+        id: `it_merge_line_${suffix}`, menuItemId,
+        name: 'Fusion', station: 'KITCHEN', unitPriceXof: 500,
+        optionsSummary: '', optionsDeltaXof: 0, quantity: 1,
+        lineTotalXof: 500, notes: '',
+      }],
+    }));
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.mergeTablesOrders(
+        trx, restaurantId, mergeSource.tableId, transferTarget.tableId,
+      ),
+    );
+    assert.equal(await db('orders').where({ id: `it_merge_order_${suffix}` }).first(), undefined);
+    assert.equal(Number((await db('orders').where({ id: `it_transfer_order_${suffix}` }).first())?.total_xof), 1500);
+    await knexRestaurantStockRepository.updateTable(transferTarget.tableId, restaurantId, { label: 'Cible renommée' });
+    const qr = await db.transaction((trx) =>
+      knexRestaurantStockRepository.regenerateTableQr(trx, transferTarget.tableId, restaurantId),
+    );
+    assert.equal(qr.version, 2);
+    assert.equal((await knexRestaurantStockRepository.findTablesWithQrAndActiveOrder(restaurantId)).find((row) => row.id === transferTarget.tableId)?.qrToken, qr.token);
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.deleteTable(trx, transferSource.tableId, restaurantId),
+    );
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.deleteTable(trx, mergeSource.tableId, restaurantId),
+    );
+    await assert.rejects(
+      db.transaction((trx) => knexRestaurantStockRepository.deleteTable(trx, transferTarget.tableId, restaurantId)),
+      /commande en cours/,
+    );
+
     const register = await db.transaction((trx) =>
       knexOperationsReadRepository.openRegisterSession(trx, {
         rid: restaurantId, userId, userName: 'Menu Test Owner',
@@ -721,6 +796,9 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     await db('purchase_orders').where({ restaurant_id: restaurantId }).del();
     await db('notifications').where({ restaurant_id: restaurantId }).del();
     await db('stock_alert_settings').where({ restaurant_id: restaurantId }).del();
+    await db('orders').where({ restaurant_id: restaurantId }).whereIn('id', [`it_transfer_order_${suffix}`, `it_merge_order_${suffix}`]).del();
+    await db('dining_tables').where({ restaurant_id: restaurantId }).whereIn('id', [`it_transfer_order_${suffix}`, `it_merge_order_${suffix}`]).del();
+    await db('qr_codes').where({ restaurant_id: restaurantId }).whereIn('table_id', [`it_transfer_order_${suffix}`, `it_merge_order_${suffix}`]).del();
     await db('payments').where({ restaurant_id: restaurantId }).del();
     await db('order_items').whereIn('order_id', db('orders').select('id').where({ restaurant_id: restaurantId })).del();
     await db('orders').where({ restaurant_id: restaurantId }).del();
