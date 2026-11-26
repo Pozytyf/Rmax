@@ -221,6 +221,138 @@ export class KnexRestaurantStockRepository {
     }));
   }
 
+  async findStocksAndMovements(rid: string) {
+    const stocks = await this.db('stocks as s')
+      .leftJoin('menu_item_recipes as r', function () {
+        this.on('r.stock_id', '=', 's.id').andOn('r.restaurant_id', '=', 's.restaurant_id');
+      })
+      .select({
+        id: 's.id', restaurantId: 's.restaurant_id', name: 's.name',
+        unit: 's.unit', stockSection: 's.stock_section',
+        quantity: 's.quantity', minThreshold: 's.min_threshold',
+        unitCostXof: 's.unit_cost_xof', supplierName: 's.supplier_name',
+        updatedAt: 's.updated_at',
+      })
+      .count({ usedInRecipesCount: 'r.id' })
+      .where('s.restaurant_id', rid)
+      .groupBy('s.id')
+      .orderBy('s.name', 'asc');
+    const movements = await this.db('stock_movements as m')
+      .join('stocks as s', function () {
+        this.on('s.id', '=', 'm.stock_id').andOn('s.restaurant_id', '=', 'm.restaurant_id');
+      })
+      .select({
+        id: 'm.id', stockName: 's.name', stockSection: 's.stock_section',
+        stockUnit: 's.unit', movementType: 'm.movement_type',
+        wasteCategory: 'm.waste_category', quantityDelta: 'm.quantity_delta',
+        reason: 'm.reason', createdAt: 'm.created_at',
+      })
+      .where('m.restaurant_id', rid)
+      .orderBy('m.created_at', 'desc')
+      .limit(40);
+    return {
+      stocks: stocks.map((row) => ({
+        ...row, stockSection: row.stockSection || 'KITCHEN',
+        quantity: Number(row.quantity || 0),
+        minThreshold: Number(row.minThreshold || 0),
+        unitCostXof: Number(row.unitCostXof || 0),
+        usedInRecipesCount: Number(row.usedInRecipesCount || 0),
+      })),
+      movements: movements.map((row) => ({
+        ...row, quantityDelta: Number(row.quantityDelta || 0),
+        wasteCategory: String(row.wasteCategory || ''),
+        stockSection: row.stockSection || 'KITCHEN',
+      })),
+    };
+  }
+
+  async createStockItem(params: {
+    rid: string; name: string; unit: string; stockSection: 'KITCHEN' | 'BEVERAGE';
+    quantity: number; minThreshold: number; unitCostXof: number; supplierName: string;
+  }): Promise<string> {
+    const id = this.id('stk');
+    await this.db('stocks').insert({
+      id, restaurant_id: params.rid, name: params.name, unit: params.unit,
+      stock_section: params.stockSection, quantity: params.quantity,
+      min_threshold: params.minThreshold, unit_cost_xof: params.unitCostXof,
+      supplier_name: params.supplierName, updated_at: new Date().toISOString(),
+    });
+    return id;
+  }
+
+  async updateStockItem(
+    stockId: string, rid: string,
+    updates: {
+      name?: string; unit?: string; stockSection?: 'KITCHEN' | 'BEVERAGE';
+      minThreshold?: number; unitCostXof?: number; supplierName?: string;
+    },
+    trx: Knex | Knex.Transaction = this.db,
+  ): Promise<number> {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (updates.name !== undefined) patch.name = updates.name;
+    if (updates.unit !== undefined) patch.unit = updates.unit;
+    if (updates.stockSection !== undefined) patch.stock_section = updates.stockSection;
+    if (updates.minThreshold !== undefined) patch.min_threshold = updates.minThreshold;
+    if (updates.unitCostXof !== undefined) patch.unit_cost_xof = updates.unitCostXof;
+    if (updates.supplierName !== undefined) patch.supplier_name = updates.supplierName;
+    return trx('stocks').where({ id: stockId, restaurant_id: rid }).update(patch);
+  }
+
+  async deleteStockItem(
+    trx: Knex.Transaction, stockId: string, rid: string,
+  ): Promise<void> {
+    const stock = await trx('stocks').select('id').where({ id: stockId, restaurant_id: rid }).forUpdate().first();
+    if (!stock) throw new AppError(404, 'Ingrédient introuvable.');
+    const [recipes, movements] = await Promise.all([
+      trx('menu_item_recipes').where({ stock_id: stockId, restaurant_id: rid }).count({ count: '*' }).first(),
+      trx('stock_movements').where({ stock_id: stockId, restaurant_id: rid }).count({ count: '*' }).first(),
+    ]);
+    if (Number(recipes?.count || 0) > 0 || Number(movements?.count || 0) > 0) {
+      throw new AppError(409, 'Cet ingrédient possède un historique ou est utilisé dans une recette. Désactivez-le plutôt que de le supprimer.');
+    }
+    await trx('stocks').where({ id: stockId, restaurant_id: rid }).del();
+  }
+
+  async applyStockMovement(
+    trx: Knex.Transaction,
+    params: {
+      rid: string; stockId: string; movementType: 'IN' | 'OUT' | 'LOSS' | 'INVENTORY';
+      quantity: number; reason: string; userId: string | null; unitCostXof?: number;
+    },
+  ) {
+    const stock = await trx('stocks')
+      .select('id', 'name', 'quantity', 'min_threshold', 'unit', 'supplier_name')
+      .where({ id: params.stockId, restaurant_id: params.rid })
+      .forUpdate().first();
+    if (!stock) throw new AppError(404, 'Article de stock introuvable.');
+    const current = Number(stock.quantity || 0);
+    const quantity = Math.round(params.quantity * 1000) / 1000;
+    const delta = params.movementType === 'IN'
+      ? quantity
+      : params.movementType === 'INVENTORY' ? quantity - current : -quantity;
+    const next = Math.round((current + delta) * 1000) / 1000;
+    if (next < 0) {
+      throw new AppError(409, `Stock insuffisant : disponible ${current}, demandé ${quantity} ${String(stock.unit)}.`);
+    }
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = { quantity: next, updated_at: now };
+    if (params.unitCostXof !== undefined && params.unitCostXof > 0) patch.unit_cost_xof = params.unitCostXof;
+    const updated = await trx('stocks').where({ id: params.stockId, restaurant_id: params.rid })
+      .where('quantity', '=', current).update(patch);
+    if (updated !== 1) throw new AppError(409, 'Le stock a changé pendant le mouvement. Réessayez.');
+    await trx('stock_movements').insert({
+      id: this.id('smv'), restaurant_id: params.rid, stock_id: params.stockId,
+      movement_type: params.movementType, quantity_delta: delta,
+      reason: params.reason, waste_category: '',
+      created_by_user_id: params.userId, created_at: now,
+    });
+    return {
+      quantity: next, delta, previousQuantity: current,
+      stockName: String(stock.name), minThreshold: Number(stock.min_threshold || 0),
+      unit: String(stock.unit), supplierName: String(stock.supplier_name || ''),
+    };
+  }
+
   async deductStocksForOrderItems(
     trx: Knex.Transaction,
     params: {
