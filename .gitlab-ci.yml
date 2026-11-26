@@ -61,6 +61,20 @@ postgres-migrations:
     - bun run test:supabase-sql
     - bun test scripts/postgres-health.integration.test.ts
 
+supabase-bootstrap:
+  stage: validate
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/restomax_bootstrap_test"
+    DATABASE_SSL: "false"
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: restomax_bootstrap_test
+  script:
+    - bun run test:supabase-bootstrap
+
 production-build:
   stage: validate
   script:
