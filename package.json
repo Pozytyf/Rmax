@@ -15,7 +15,7 @@
     "migrate:latest": "tsx src/server/migrate.ts latest",
     "migrate:rollback": "tsx src/server/migrate.ts rollback",
     "test:e2e": "playwright test",
-    "test:postgres-config": "bun test src/tests/postgres-runtime-config.test.ts src/tests/postgres-migration-gate.test.ts",
+    "test:postgres-config": "bun test scripts/postgres-runtime-config.test.ts",
     "test:all": "bun test --max-concurrency 1 src/tests src/server/tests",
     "test:supabase-sql": "bun run scripts/test-supabase-sql-migrations.ts",
     "test:supabase-bootstrap": "bun run scripts/test-supabase-bootstrap.ts"
