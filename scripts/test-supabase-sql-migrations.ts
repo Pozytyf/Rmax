@@ -23,6 +23,7 @@ const migrationFiles = [
   '202611260017_add_option_groups_json_to_menu_items.sql',
   '202611260018_add_public_order_fields.sql',
   '202611260019_add_public_restaurant_settings.sql',
+  '202611260020_seed_default_saas_plans.sql',
 ];
 
 async function main(): Promise<void> {

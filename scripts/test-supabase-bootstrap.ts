@@ -62,6 +62,7 @@ async function main(): Promise<void> {
       '202611260017_add_option_groups_json_to_menu_items.sql',
       '202611260018_add_public_order_fields.sql',
       '202611260019_add_public_restaurant_settings.sql',
+      '202611260020_seed_default_saas_plans.sql',
     ]) {
       const migrationPath = path.resolve(process.cwd(), 'supabase/migrations', migration);
       await client.query(await fs.readFile(migrationPath, 'utf8'));
@@ -115,6 +116,11 @@ async function main(): Promise<void> {
       "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'restaurants' AND column_name IN ('loyalty_enabled', 'loyalty_points_per_1000_xof', 'loyalty_xof_per_point', 'storefront_enabled', 'delivery_enabled', 'delivery_zones_json', 'pickup_slots_json')",
     );
     assert.equal(publicRestaurantColumns.rowCount, 7, 'Bootstrap schema is missing public restaurant settings');
+
+    const plans = await client.query(
+      "SELECT code FROM public.plans WHERE code IN ('ESSENTIEL', 'PROFESSIONNEL', 'PREMIUM')",
+    );
+    assert.equal(plans.rowCount, 3, 'Bootstrap schema is missing one or more default SaaS plans');
 
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",
