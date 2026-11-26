@@ -701,7 +701,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
       : operationsRepository.findInventoryCounts(rid);
   }
 
-  createInventoryCount(auth: AuthContext, body: Record<string, unknown>) {
+  async createInventoryCount(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const rawSection = String(body?.stockSection || 'ALL').toUpperCase();
     const stockSection: 'ALL' | 'KITCHEN' | 'BEVERAGE' =
@@ -715,6 +715,30 @@ export class OperationsService extends BaseService<OperationsRepository> {
     const rawLines = Array.isArray(body?.lines) ? body.lines : [];
     if (rawLines.length === 0) {
       throw new AppError(400, 'Saisissez au moins une ligne de comptage.');
+    }
+
+    if (usesPostgresRepositories()) {
+      const result = await getKnex().transaction(async (trx) => {
+        const created = await knexOperationsReadRepository.createInventoryCount(trx, {
+          restaurantId: rid, title, stockSection,
+          notes: String(body?.notes || '').slice(0, 400),
+          createdByName: auth.fullName, userId: auth.userId,
+          lines: rawLines.map((raw) => {
+            const line = (raw || {}) as { stockId?: unknown; countedQty?: unknown };
+            return { stockId: String(line.stockId || '').trim(), countedQty: Number(line.countedQty) };
+          }),
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'INVENTORY_COUNT_VALIDATED', targetType: 'INVENTORY_COUNT',
+          targetId: created.id,
+          details: `${title} (${stockSection}) · Écart valorisé ${created.totalVarianceXof} FCFA`,
+        });
+        return created;
+      });
+      broadcastRestaurantEvent(rid, 'stock:updated', { inventoryCountId: result.id });
+      return (await knexOperationsReadRepository.findInventoryCounts(rid)).find((item) => item.id === result.id);
     }
 
     const db = getDb();
@@ -849,7 +873,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
     return operationsRepository.findInventoryCounts(rid).find((c) => c.id === countId);
   }
 
-  recordTypedWaste(
+  async recordTypedWaste(
     auth: AuthContext,
     stockId: string,
     body: Record<string, unknown>,
@@ -868,6 +892,31 @@ export class OperationsService extends BaseService<OperationsRepository> {
       throw new AppError(400, 'Quantité de perte positive requise.');
     }
 
+    const labels: Record<string, string> = {
+      EXPIRED: 'Péremption',
+      BROKEN: 'Casse / Préparation ratée',
+      COMPLIMENTARY: 'Offert client / Dégustation',
+    };
+    const reasonText = String(body?.reason || '').trim() || `Perte (${labels[cat]})`;
+    if (usesPostgresRepositories()) {
+      const result = await getKnex().transaction(async (trx) => {
+        const created = await knexOperationsReadRepository.recordTypedWaste(trx, {
+          restaurantId: rid, stockId, quantity: qty, category: cat,
+          reason: reasonText, userId: auth.userId,
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'STOCK_WASTE_RECORDED', targetType: 'STOCK',
+          targetId: stockId,
+          details: `${created.stockName} : -${Math.round(qty * 1000) / 1000} (${cat})`,
+        });
+        return created;
+      });
+      broadcastRestaurantEvent(rid, 'stock:updated', { stockId, quantity: result.quantity });
+      return { stockId, quantity: result.quantity, wasteCategory: cat };
+    }
+
     const db = getDb();
     const stock = db
       .prepare('SELECT id, name, quantity FROM stocks WHERE id = ? AND restaurant_id = ?')
@@ -877,10 +926,10 @@ export class OperationsService extends BaseService<OperationsRepository> {
     if (!stock) throw new AppError(404, 'Ingrédient introuvable.');
 
     const roundedDelta = Math.round(qty * 1000) / 1000;
-    const nextQty = Math.max(
-      0,
-      Math.round((Number(stock.quantity) - roundedDelta) * 1000) / 1000,
-    );
+    if (roundedDelta > Number(stock.quantity)) {
+      throw new AppError(409, 'Stock insuffisant pour enregistrer cette perte.');
+    }
+    const nextQty = Math.round((Number(stock.quantity) - roundedDelta) * 1000) / 1000;
     const now = new Date().toISOString();
     const labels: Record<string, string> = {
       EXPIRED: 'Péremption',
@@ -1041,7 +1090,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
     if (!changes) throw new AppError(404, 'Créneau introuvable.');
   }
 
-  clockWithPin(auth: AuthContext, body: Record<string, unknown>) {
+  async clockWithPin(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const userId = typeof body?.userId === 'string' ? body.userId.trim() : '';
     const pin = typeof body?.pin === 'string' ? body.pin.trim() : '';
@@ -1056,6 +1105,38 @@ export class OperationsService extends BaseService<OperationsRepository> {
       15 * 60_000,
       'Trop de codes PIN erronés. Patientez 15 minutes.',
     );
+
+    if (usesPostgresRepositories()) {
+      const member = await knexOperationsReadRepository.findClockMember(rid, userId);
+      if (!member || !member.pinHash || !bcrypt.compareSync(pin, String(member.pinHash))) {
+        recordRateLimitHit(rateKey, 15 * 60_000);
+        throw new AppError(401, 'Code PIN invalide pour cet employé.');
+      }
+      clearRateLimit(rateKey);
+      if (member.userStatus !== 'ACTIVE' || member.memberStatus !== 'ACTIVE') {
+        throw new AppError(403, 'Compte employé suspendu.');
+      }
+      const requested = String(body?.action || 'AUTO').toUpperCase();
+      if (!['AUTO', 'IN', 'OUT'].includes(requested)) throw new AppError(400, 'Action de pointage invalide.');
+      const result = await getKnex().transaction(async (trx) => {
+        const clock = await knexOperationsReadRepository.toggleStaffClock(trx, {
+          restaurantId: rid, userId, action: requested,
+          notes: String(body?.notes || '').slice(0, 200),
+          actorUserId: auth.userId, actorEmail: auth.email, actorRole: auth.role,
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: clock.action === 'CLOCK_IN' ? 'STAFF_CLOCK_IN' : 'STAFF_CLOCK_OUT',
+          targetType: 'TIME_CLOCK', targetId: clock.clock.id,
+          details: clock.action === 'CLOCK_IN'
+            ? `${clock.staffName} · Entrée pointée`
+            : `${clock.staffName} · ${clock.durationMinutes} min`,
+        });
+        return clock;
+      });
+      return result;
+    }
 
     const db = getDb();
     const member = db
@@ -1180,7 +1261,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
       : operationsRepository.findB2bInvoices(rid);
   }
 
-  createB2bInvoice(auth: AuthContext, body: Record<string, unknown>) {
+  async createB2bInvoice(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const clientName =
       typeof body?.clientName === 'string' ? body.clientName.trim() : '';
@@ -1219,6 +1300,42 @@ export class OperationsService extends BaseService<OperationsRepository> {
 
     if (items.length === 0) {
       throw new AppError(400, 'Ajoutez au moins une ligne de prestation.');
+    }
+
+    if (usesPostgresRepositories()) {
+      const id = generateId('b2b');
+      const docType = body?.docType === 'INVOICE' ? 'INVOICE' : 'PROFORMA';
+      const created = await getKnex().transaction(async (trx) => {
+        const resto = await trx('restaurants').select('tax_rate_percent').where({ id: rid }).first();
+        if (!resto) throw new AppError(404, 'Établissement introuvable.');
+        const taxRatePercent = body?.taxRatePercent !== undefined && Number.isFinite(Number(body.taxRatePercent))
+          ? Math.max(0, Math.min(30, Number(body.taxRatePercent)))
+          : Number(resto.tax_rate_percent ?? 18);
+        const subtotalHtXof = items.reduce((sum, line) => sum + line.lineTotalXof, 0);
+        const taxXof = Math.round((subtotalHtXof * taxRatePercent) / 100);
+        const totalTtcXof = subtotalHtXof + taxXof;
+        const status = ['DRAFT', 'SENT', 'ACCEPTED', 'PAID'].includes(String(body?.status))
+          ? String(body.status) as B2bInvoice['status'] : 'SENT';
+        const invoice = await knexOperationsReadRepository.createB2bInvoice(trx, {
+          restaurantId: rid, id, docType, clientName,
+          clientCompany: String(body?.clientCompany || '').trim(),
+          clientTaxId: String(body?.clientTaxId || '').trim(),
+          clientEmail: String(body?.clientEmail || '').trim(),
+          clientPhone: String(body?.clientPhone || '').trim(),
+          clientAddress: String(body?.clientAddress || '').trim(),
+          items, subtotalHtXof, taxRatePercent, taxXof, totalTtcXof,
+          status, dueDate: body?.dueDate ? String(body.dueDate) : null,
+          notes: String(body?.notes || '').slice(0, 500),
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'B2B_DOCUMENT_CREATED', targetType: 'B2B_INVOICE',
+          targetId: id, details: `${invoice.invoiceNumber} · ${totalTtcXof} FCFA TTC`,
+        });
+        return invoice;
+      });
+      return created;
     }
 
     const db = getDb();
@@ -1292,20 +1409,47 @@ export class OperationsService extends BaseService<OperationsRepository> {
     return operationsRepository.findB2bInvoices(rid).find((d) => d.id === id);
   }
 
-  updateB2bInvoiceStatus(auth: AuthContext, id: string, status: unknown) {
+  async updateB2bInvoiceStatus(auth: AuthContext, id: string, status: unknown) {
     const rid = auth.restaurantId!;
     const clean = String(status || '').toUpperCase();
     if (!['DRAFT', 'SENT', 'ACCEPTED', 'PAID', 'CANCELLED'].includes(clean)) {
       throw new AppError(400, 'Statut B2B invalide.');
     }
-    const changes = getDb()
-      .prepare('UPDATE b2b_invoices SET status = ? WHERE id = ? AND restaurant_id = ?')
-      .run(clean, id, rid).changes;
+    const changes = usesPostgresRepositories()
+      ? await getKnex().transaction(async (trx) => {
+          const updated = await knexOperationsReadRepository.updateB2bInvoiceStatus(rid, id, clean as B2bInvoice['status'], trx);
+          if (updated) await recordAuditWithKnex(trx, {
+            actorUserId: auth.userId, actorEmail: auth.email,
+            actorRole: auth.role, restaurantId: rid,
+            action: 'B2B_DOCUMENT_STATUS_UPDATED', targetType: 'B2B_INVOICE',
+            targetId: id, details: `Nouveau statut : ${clean}`,
+          });
+          return updated;
+        })
+      : getDb()
+          .prepare('UPDATE b2b_invoices SET status = ? WHERE id = ? AND restaurant_id = ?')
+          .run(clean, id, rid).changes;
     if (!changes) throw new AppError(404, 'Document B2B introuvable.');
   }
 
-  convertProformaToInvoice(auth: AuthContext, proformaId: string) {
+  async convertProformaToInvoice(auth: AuthContext, proformaId: string) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      const converted = await getKnex().transaction(async (trx) => {
+        const result = await knexOperationsReadRepository.convertProformaToInvoice(trx, {
+          restaurantId: rid, proformaId, newId: generateId('b2b'),
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'B2B_PROFORMA_CONVERTED', targetType: 'B2B_INVOICE',
+          targetId: result.invoice.id,
+          details: `${result.sourceInvoiceNumber} -> ${result.invoice.invoiceNumber}`,
+        });
+        return result;
+      });
+      return { sourceProformaId: proformaId, invoice: converted.invoice };
+    }
     const db = getDb();
     const existing = operationsRepository
       .findB2bInvoices(rid)
