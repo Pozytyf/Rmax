@@ -1478,11 +1478,14 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     }
   }
 
-  getTables(rid: string) {
-    return restaurantRepository.findTablesWithQrAndActiveOrder(rid);
+  async getTables(rid: string) {
+    this.ensureTenantId(rid);
+    return usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findTablesWithQrAndActiveOrder(rid)
+      : restaurantRepository.findTablesWithQrAndActiveOrder(rid);
   }
 
-  createTable(rid: string, body: Record<string, unknown>) {
+  async createTable(rid: string, body: Record<string, unknown>) {
     const { zone, label, capacity, posX, posY, shape } = body || {};
     if (typeof label !== 'string' || label.trim().length < 1) {
       throw new AppError(400, 'Nom de table requis.');
@@ -1494,6 +1497,17 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       ? Math.max(0, Math.min(2000, Math.round(Number(posY))))
       : undefined;
     const cleanShape = shape === 'RECT' ? 'RECT' : 'ROUND';
+    if (usesPostgresRepositories()) {
+      const created = await getKnex().transaction((trx) =>
+        knexRestaurantStockRepository.createTableWithQr(trx, {
+          rid, zone: String(zone || 'Salle principale').trim(),
+          label: label.trim(), capacity: Math.max(1, Math.min(24, Number(capacity) || 4)),
+          posX: cleanPosX, posY: cleanPosY, shape: cleanShape,
+        }),
+      );
+      broadcastRestaurantEvent(rid, 'table:updated', { tableId: created.tableId });
+      return { id: created.tableId, qrToken: created.qrToken };
+    }
     const { tableId, qrToken } = restaurantRepository.createTableWithQr(
       rid,
       String(zone || 'Salle principale').trim(),
@@ -1507,12 +1521,27 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     return { id: tableId, qrToken };
   }
 
-  updateTable(rid: string, tableId: string, body: Record<string, unknown>) {
-    const tbl = restaurantRepository.findTableById(tableId, rid);
-    if (!tbl) {
-      throw new AppError(404, 'Table introuvable.');
-    }
+  async updateTable(rid: string, tableId: string, body: Record<string, unknown>) {
     const { zone, label, capacity, status, posX, posY, shape } = body || {};
+    if (usesPostgresRepositories()) {
+      const tbl = await knexRestaurantStockRepository.findTableById(tableId, rid);
+      if (!tbl) throw new AppError(404, 'Table introuvable.');
+      if (status !== undefined && !['AVAILABLE', 'OCCUPIED', 'RESERVED'].includes(String(status))) throw new AppError(400, 'Statut de table invalide.');
+      if (label !== undefined && (typeof label !== 'string' || label.trim().length < 1)) throw new AppError(400, 'Nom de table invalide.');
+      await knexRestaurantStockRepository.updateTable(tableId, rid, {
+        zone: typeof zone === 'string' && zone.trim() ? zone.trim() : undefined,
+        label: typeof label === 'string' ? label.trim() : undefined,
+        capacity: capacity !== undefined && Number.isFinite(Number(capacity)) ? Math.max(1, Math.min(24, Math.round(Number(capacity)))) : undefined,
+        status: status !== undefined ? String(status) : undefined,
+        posX: posX !== undefined && Number.isFinite(Number(posX)) ? Math.max(0, Math.min(2000, Math.round(Number(posX)))) : undefined,
+        posY: posY !== undefined && Number.isFinite(Number(posY)) ? Math.max(0, Math.min(2000, Math.round(Number(posY)))) : undefined,
+        shape: shape === 'RECT' ? 'RECT' : shape === 'ROUND' ? 'ROUND' : undefined,
+      });
+      broadcastRestaurantEvent(rid, 'table:updated', { tableId });
+      return;
+    }
+    const tbl = restaurantRepository.findTableById(tableId, rid);
+    if (!tbl) throw new AppError(404, 'Table introuvable.');
     if (status !== undefined && !['AVAILABLE', 'OCCUPIED', 'RESERVED'].includes(String(status))) {
       throw new AppError(400, 'Statut de table invalide.');
     }
@@ -1541,8 +1570,23 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'table:updated', { tableId });
   }
 
-  deleteTable(auth: AuthContext, tableId: string) {
+  async deleteTable(auth: AuthContext, tableId: string) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const tbl = await knexRestaurantStockRepository.findTableById(tableId, rid, trx);
+        if (!tbl) throw new AppError(404, 'Table introuvable.');
+        await knexRestaurantStockRepository.deleteTable(trx, tableId, rid);
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'TABLE_DELETED', targetType: 'TABLE',
+          targetId: tableId, details: String(tbl.label),
+        });
+      });
+      broadcastRestaurantEvent(rid, 'table:updated', { tableId });
+      return;
+    }
     const tbl = restaurantRepository.findTableById(tableId, rid);
     if (!tbl) {
       throw new AppError(404, 'Table introuvable.');
@@ -1568,11 +1612,30 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'table:updated', { tableId });
   }
 
-  transferTable(auth: AuthContext, sourceTableId: string, body: Record<string, unknown>) {
+  async transferTable(auth: AuthContext, sourceTableId: string, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const targetTableId = typeof body?.targetTableId === 'string' ? body.targetTableId.trim() : '';
     if (!targetTableId || targetTableId === sourceTableId) {
       throw new AppError(400, 'Veuillez sélectionner une table de destination distincte.');
+    }
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const [source, target] = await Promise.all([
+          knexRestaurantStockRepository.findTableById(sourceTableId, rid, trx),
+          knexRestaurantStockRepository.findTableById(targetTableId, rid, trx),
+        ]);
+        if (!source || !target) throw new AppError(404, 'Table source ou destination introuvable.');
+        await knexRestaurantStockRepository.transferTableOrders(trx, rid, sourceTableId, targetTableId);
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'TABLE_TRANSFERRED', targetType: 'TABLE',
+          targetId: sourceTableId, details: `${source.label} -> ${target.label}`,
+        });
+      });
+      broadcastRestaurantEvent(rid, 'table:updated', { sourceTableId, targetTableId });
+      broadcastRestaurantEvent(rid, 'order:updated', { tableId: targetTableId });
+      return;
     }
     const source = restaurantRepository.findTableById(sourceTableId, rid);
     const target = restaurantRepository.findTableById(targetTableId, rid);
@@ -1616,11 +1679,30 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'order:updated', { tableId: targetTableId });
   }
 
-  mergeTables(auth: AuthContext, targetTableId: string, body: Record<string, unknown>) {
+  async mergeTables(auth: AuthContext, targetTableId: string, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const sourceTableId = typeof body?.sourceTableId === 'string' ? body.sourceTableId.trim() : '';
     if (!sourceTableId || sourceTableId === targetTableId) {
       throw new AppError(400, 'Veuillez sélectionner une table source distincte à fusionner.');
+    }
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const [target, source] = await Promise.all([
+          knexRestaurantStockRepository.findTableById(targetTableId, rid, trx),
+          knexRestaurantStockRepository.findTableById(sourceTableId, rid, trx),
+        ]);
+        if (!target || !source) throw new AppError(404, 'Table source ou destination introuvable.');
+        await knexRestaurantStockRepository.mergeTablesOrders(trx, rid, sourceTableId, targetTableId);
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'TABLES_MERGED', targetType: 'TABLE',
+          targetId: targetTableId, details: `${source.label} fusionnée dans ${target.label}`,
+        });
+      });
+      broadcastRestaurantEvent(rid, 'table:updated', { sourceTableId, targetTableId });
+      broadcastRestaurantEvent(rid, 'order:updated', { tableId: targetTableId });
+      return;
     }
     const target = restaurantRepository.findTableById(targetTableId, rid);
     const source = restaurantRepository.findTableById(sourceTableId, rid);
@@ -1666,16 +1748,33 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'order:updated', { tableId: targetTableId });
   }
 
-  updateTableStatus(rid: string, tableId: string, status: unknown) {
+  async updateTableStatus(rid: string, tableId: string, status: unknown) {
     if (!['AVAILABLE', 'OCCUPIED', 'RESERVED'].includes(String(status))) {
       throw new AppError(400, 'Statut de table invalide.');
     }
-    restaurantRepository.updateTableStatus(tableId, rid, String(status));
+    if (usesPostgresRepositories()) await knexRestaurantStockRepository.updateTableStatus(tableId, rid, String(status));
+    else restaurantRepository.updateTableStatus(tableId, rid, String(status));
     broadcastRestaurantEvent(rid, 'table:updated', { tableId, status });
   }
 
-  regenerateTableQr(auth: AuthContext, tableId: string) {
+  async regenerateTableQr(auth: AuthContext, tableId: string) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      const result = await getKnex().transaction(async (trx) => {
+        const tbl = await knexRestaurantStockRepository.findTableById(tableId, rid, trx);
+        if (!tbl) throw new AppError(404, 'Table introuvable.');
+        const qr = await knexRestaurantStockRepository.regenerateTableQr(trx, tableId, rid);
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'QR_REGENERATED', targetType: 'TABLE',
+          targetId: tableId, details: `${tbl.label} -> version ${qr.version}`,
+        });
+        return qr;
+      });
+      broadcastRestaurantEvent(rid, 'table:updated', { tableId, qrVersion: result.version });
+      return result;
+    }
     const tbl = restaurantRepository.findTableById(tableId, rid);
     if (!tbl) {
       throw new AppError(404, 'Table introuvable.');
