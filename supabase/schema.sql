@@ -818,6 +818,16 @@ WITH CHECK (
 );
 
 -- ============================================================================
+-- Keep the internal RLS DDL event-trigger function off the public RPC surface.
+DO $
+BEGIN
+  IF to_regprocedure('public.rls_auto_enable()') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM anon, authenticated';
+  END IF;
+END
+$;
+
 -- Supabase Realtime Publication (temps réel KDS, Salle & Suivi QR sur Vercel)
 -- ============================================================================
 DO $$
