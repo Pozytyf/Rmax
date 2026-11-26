@@ -8,6 +8,16 @@ function makeId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
 }
 
+export async function loadActivePromotionsKnex(
+  trx: Knex | Knex.Transaction,
+  restaurantId: string,
+) {
+  const rows = await trx('promotions')
+    .where({ restaurant_id: restaurantId, active: 1 })
+    .orderBy('created_at', 'desc');
+  return rows.map((row) => mapPromotionRow(row));
+}
+
 export async function applyOrderPromoAndLoyaltyDiscountsKnex(params: {
   trx: Knex.Transaction;
   restaurantId: string;
