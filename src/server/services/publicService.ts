@@ -898,7 +898,7 @@ export class PublicService extends BaseService<PublicRepository> {
       db.exec('BEGIN IMMEDIATE');
 
       const { grossXof, preparedLines, recipeDeductItems } =
-        this.buildPublicOrderLines({
+        await this.buildPublicOrderLines({
           restaurantId,
           rawItems,
           rawCombos,
