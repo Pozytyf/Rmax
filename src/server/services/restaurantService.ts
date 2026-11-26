@@ -1417,10 +1417,10 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       : restaurantRepository.findStocksAndMovements(rid);
   }
 
-  private resolveStockAlertRecipients(
+  private async resolveStockAlertRecipients(
     rid: string,
     customEmailsCsv: string,
-  ): string[] {
+  ): Promise<string[]> {
     const parsed = customEmailsCsv
       .split(/[,;\s]+/)
       .map((e) => e.trim().toLowerCase())
@@ -1428,7 +1428,9 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     if (parsed.length > 0) {
       return Array.from(new Set(parsed));
     }
-    return restaurantRepository.findManagerEmailsForRestaurant(rid);
+    return usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findManagerEmailsForRestaurant(rid)
+      : restaurantRepository.findManagerEmailsForRestaurant(rid);
   }
 
   async dispatchCriticalStockAlert(params: {
@@ -1445,12 +1447,13 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     if (!rid) {
       throw new AppError(400, 'Identifiant restaurant requis.');
     }
-    const settings = restaurantRepository.findStockAlertSettings(rid);
-    const recipients = this.resolveStockAlertRecipients(
-      rid,
-      settings.recipientEmails,
-    );
-    const restaurantName = restaurantRepository.findRestaurantNameById(rid);
+    const settings = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findStockAlertSettings(rid)
+      : restaurantRepository.findStockAlertSettings(rid);
+    const recipients = await this.resolveStockAlertRecipients(rid, settings.recipientEmails);
+    const restaurantName = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findRestaurantNameById(rid)
+      : restaurantRepository.findRestaurantNameById(rid);
 
     let emailResult: {
       dispatched: boolean;
@@ -1488,20 +1491,7 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     const message = `${params.stockName} est à ${params.quantity} ${params.unit} (seuil minimal : ${params.minThreshold} ${params.unit}).`;
 
     let notification = null;
-    if (settings.inAppEnabled) {
-      notification = restaurantRepository.createNotification({
-        rid,
-        type: 'STOCK_CRITICAL',
-        title,
-        message,
-        stockId: params.stockId,
-        emailDispatched: emailResult.dispatched,
-        emailRecipients: emailResult.recipients.join(', '),
-        emailStatus: emailResult.status,
-      });
-    }
-
-    recordAudit(getDb(), {
+    const auditParams = {
       actorUserId: params.auth?.userId ?? null,
       actorEmail: params.auth?.email ?? 'system@restomax.ci',
       actorRole: params.auth?.role ?? 'SYSTEM',
@@ -1510,7 +1500,28 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       targetType: 'STOCK',
       targetId: params.stockId,
       details: `${params.stockName}: ${params.quantity}/${params.minThreshold} ${params.unit} (email=${emailResult.status})`,
-    });
+    };
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        if (settings.inAppEnabled) {
+          notification = await knexRestaurantStockRepository.createNotification({
+            rid, type: 'STOCK_CRITICAL', title, message,
+            stockId: params.stockId, emailDispatched: emailResult.dispatched,
+            emailRecipients: emailResult.recipients.join(', '), emailStatus: emailResult.status,
+          }, trx);
+        }
+        await recordAuditWithKnex(trx, auditParams);
+      });
+    } else {
+      if (settings.inAppEnabled) {
+        notification = restaurantRepository.createNotification({
+          rid, type: 'STOCK_CRITICAL', title, message, stockId: params.stockId,
+          emailDispatched: emailResult.dispatched,
+          emailRecipients: emailResult.recipients.join(', '), emailStatus: emailResult.status,
+        });
+      }
+      recordAudit(getDb(), auditParams);
+    }
 
     broadcastRestaurantEvent(rid, 'stock:alert', {
       stockId: params.stockId,
@@ -1931,14 +1942,15 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     }
   }
 
-  getStockAlertConfig(rid: string) {
+  async getStockAlertConfig(rid: string) {
     this.ensureTenantId(rid);
-    const settings = restaurantRepository.findStockAlertSettings(rid);
-    const resolvedRecipients = this.resolveStockAlertRecipients(
-      rid,
-      settings.recipientEmails,
-    );
-    const recentAlerts = restaurantRepository.findRecentStockAlerts(rid);
+    const settings = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findStockAlertSettings(rid)
+      : restaurantRepository.findStockAlertSettings(rid);
+    const resolvedRecipients = await this.resolveStockAlertRecipients(rid, settings.recipientEmails);
+    const recentAlerts = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findRecentStockAlerts(rid)
+      : restaurantRepository.findRecentStockAlerts(rid);
     return {
       settings: {
         restaurantId: settings.restaurantId,
@@ -1959,7 +1971,7 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     };
   }
 
-  updateStockAlertConfig(auth: AuthContext, body: Record<string, unknown>) {
+  async updateStockAlertConfig(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const {
       inAppEnabled,
@@ -1972,7 +1984,9 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       smtpPass,
       smtpFrom,
     } = body || {};
-    const current = restaurantRepository.findStockAlertSettings(rid);
+    const current = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findStockAlertSettings(rid)
+      : restaurantRepository.findStockAlertSettings(rid);
 
     const nextSmtpHost =
       typeof smtpHost === 'string' ? smtpHost.trim() : current.smtpHost;
@@ -1983,30 +1997,20 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       );
     }
 
-    const updated = restaurantRepository.upsertStockAlertSettings({
+    const settingsParams = {
       rid,
-      inAppEnabled:
-        typeof inAppEnabled === 'boolean' ? inAppEnabled : current.inAppEnabled,
-      emailEnabled:
-        typeof emailEnabled === 'boolean' ? emailEnabled : current.emailEnabled,
-      recipientEmails:
-        typeof recipientEmails === 'string'
-          ? recipientEmails.trim()
-          : current.recipientEmails,
+      inAppEnabled: typeof inAppEnabled === 'boolean' ? inAppEnabled : current.inAppEnabled,
+      emailEnabled: typeof emailEnabled === 'boolean' ? emailEnabled : current.emailEnabled,
+      recipientEmails: typeof recipientEmails === 'string' ? recipientEmails.trim() : current.recipientEmails,
       smtpHost: nextSmtpHost,
-      smtpPort: Number.isFinite(Number(smtpPort))
-        ? Math.max(1, Math.min(65535, Number(smtpPort)))
-        : current.smtpPort,
-      smtpSecure:
-        typeof smtpSecure === 'boolean' ? smtpSecure : current.smtpSecure,
-      smtpUser:
-        typeof smtpUser === 'string' ? smtpUser.trim() : current.smtpUser,
+      smtpPort: Number.isFinite(Number(smtpPort)) ? Math.max(1, Math.min(65535, Number(smtpPort))) : current.smtpPort,
+      smtpSecure: typeof smtpSecure === 'boolean' ? smtpSecure : current.smtpSecure,
+      smtpUser: typeof smtpUser === 'string' ? smtpUser.trim() : current.smtpUser,
       smtpPass: typeof smtpPass === 'string' ? smtpPass : undefined,
-      smtpFrom:
-        typeof smtpFrom === 'string' ? smtpFrom.trim() : current.smtpFrom,
-    });
-
-    recordAudit(getDb(), {
+      smtpFrom: typeof smtpFrom === 'string' ? smtpFrom.trim() : current.smtpFrom,
+    };
+    let updated;
+    const auditParams = {
       actorUserId: auth.userId,
       actorEmail: auth.email,
       actorRole: auth.role,
@@ -2014,18 +2018,25 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       action: 'STOCK_ALERT_CONFIG_UPDATED',
       targetType: 'RESTAURANT',
       targetId: rid,
-      details: `inApp=${updated.inAppEnabled} email=${updated.emailEnabled} smtp=${updated.smtpHost || 'ENV'}`,
-    });
+      details: `inApp=${settingsParams.inAppEnabled} email=${settingsParams.emailEnabled} smtp=${settingsParams.smtpHost || 'ENV'}`,
+    };
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        await knexRestaurantStockRepository.upsertStockAlertSettings(settingsParams, trx);
+        await recordAuditWithKnex(trx, auditParams);
+      });
+      updated = await knexRestaurantStockRepository.findStockAlertSettings(rid);
+    } else {
+      updated = restaurantRepository.upsertStockAlertSettings(settingsParams);
+      recordAudit(getDb(), auditParams);
+    }
 
     return {
       restaurantId: updated.restaurantId,
       inAppEnabled: updated.inAppEnabled,
       emailEnabled: updated.emailEnabled,
       recipientEmails: updated.recipientEmails,
-      resolvedRecipients: this.resolveStockAlertRecipients(
-        rid,
-        updated.recipientEmails,
-      ),
+      resolvedRecipients: await this.resolveStockAlertRecipients(rid, updated.recipientEmails),
       smtpHost: updated.smtpHost,
       smtpPort: updated.smtpPort,
       smtpSecure: updated.smtpSecure,
@@ -2039,12 +2050,13 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
 
   async testStockAlertEmail(auth: AuthContext) {
     const rid = auth.restaurantId!;
-    const settings = restaurantRepository.findStockAlertSettings(rid);
-    const recipients = this.resolveStockAlertRecipients(
-      rid,
-      settings.recipientEmails,
-    );
-    const restaurantName = restaurantRepository.findRestaurantNameById(rid);
+    const settings = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findStockAlertSettings(rid)
+      : restaurantRepository.findStockAlertSettings(rid);
+    const recipients = await this.resolveStockAlertRecipients(rid, settings.recipientEmails);
+    const restaurantName = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findRestaurantNameById(rid)
+      : restaurantRepository.findRestaurantNameById(rid);
     const res = await sendSmtpTestEmail({
       restaurantName,
       recipients,
@@ -2064,7 +2076,9 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
 
   async triggerManualStockAlert(auth: AuthContext, stockId: string) {
     const rid = auth.restaurantId!;
-    const stock = restaurantRepository.findStockById(stockId, rid);
+    const stock = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findStockById(stockId, rid)
+      : restaurantRepository.findStockById(stockId, rid);
     if (!stock) {
       throw new AppError(404, 'Article de stock introuvable.');
     }
@@ -2079,18 +2093,20 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     });
   }
 
-  getNotifications(rid: string) {
+  async getNotifications(rid: string) {
     this.ensureTenantId(rid);
-    const notifications =
-      restaurantRepository.findNotificationsForRestaurant(rid);
+    const notifications = usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findNotificationsForRestaurant(rid)
+      : restaurantRepository.findNotificationsForRestaurant(rid);
     const unreadCount = notifications.filter((n) => !n.isRead).length;
     return { notifications, unreadCount };
   }
 
-  markNotificationsRead(rid: string, body: Record<string, unknown>) {
+  async markNotificationsRead(rid: string, body: Record<string, unknown>) {
     this.ensureTenantId(rid);
     const id = typeof body?.id === 'string' ? body.id : undefined;
-    restaurantRepository.markNotificationsRead(rid, id);
+    if (usesPostgresRepositories()) await knexRestaurantStockRepository.markNotificationsRead(rid, id);
+    else restaurantRepository.markNotificationsRead(rid, id);
     broadcastRestaurantEvent(rid, 'notifications:updated', {
       id: id || null,
     });
