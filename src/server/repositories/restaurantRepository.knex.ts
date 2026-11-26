@@ -353,6 +353,129 @@ export class KnexRestaurantStockRepository {
     };
   }
 
+  async findRestaurantNameById(rid: string): Promise<string> {
+    const row = await this.db('restaurants').select('name').where({ id: rid }).first();
+    return row?.name ? String(row.name) : 'Établissement Resto’MAX';
+  }
+
+  async findStockAlertSettings(rid: string) {
+    const row = await this.db('stock_alert_settings').where({ restaurant_id: rid }).first();
+    if (!row) {
+      return {
+        restaurantId: rid, inAppEnabled: true, emailEnabled: true,
+        recipientEmails: '', smtpHost: '', smtpPort: 587,
+        smtpSecure: false, smtpUser: '', smtpPass: '',
+        smtpFrom: '', updatedAt: new Date().toISOString(),
+      };
+    }
+    return {
+      restaurantId: rid, inAppEnabled: Boolean(row.in_app_enabled),
+      emailEnabled: Boolean(row.email_enabled),
+      recipientEmails: String(row.recipient_emails || ''),
+      smtpHost: String(row.smtp_host || ''), smtpPort: Number(row.smtp_port || 587),
+      smtpSecure: Boolean(row.smtp_secure), smtpUser: String(row.smtp_user || ''),
+      smtpPass: String(row.smtp_pass || ''), smtpFrom: String(row.smtp_from || ''),
+      updatedAt: String(row.updated_at || ''),
+    };
+  }
+
+  async upsertStockAlertSettings(params: {
+    rid: string; inAppEnabled: boolean; emailEnabled: boolean;
+    recipientEmails: string; smtpHost: string; smtpPort: number;
+    smtpSecure: boolean; smtpUser: string; smtpPass?: string; smtpFrom: string;
+  }, trx: Knex | Knex.Transaction = this.db) {
+    const current = await trx('stock_alert_settings').select('smtp_pass')
+      .where({ restaurant_id: params.rid }).first();
+    const password = params.smtpPass && params.smtpPass.trim()
+      ? params.smtpPass : String(current?.smtp_pass || '');
+    const now = new Date().toISOString();
+    await trx('stock_alert_settings').insert({
+      restaurant_id: params.rid,
+      in_app_enabled: params.inAppEnabled ? 1 : 0,
+      email_enabled: params.emailEnabled ? 1 : 0,
+      recipient_emails: params.recipientEmails, smtp_host: params.smtpHost,
+      smtp_port: params.smtpPort, smtp_secure: params.smtpSecure ? 1 : 0,
+      smtp_user: params.smtpUser, smtp_pass: password,
+      smtp_from: params.smtpFrom, updated_at: now,
+    }).onConflict('restaurant_id').merge([
+      'in_app_enabled', 'email_enabled', 'recipient_emails', 'smtp_host',
+      'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_pass', 'smtp_from', 'updated_at',
+    ]);
+    return this.findStockAlertSettings(rid);
+  }
+
+  async findManagerEmailsForRestaurant(rid: string): Promise<string[]> {
+    const rows = await this.db('restaurant_members as rm')
+      .join('users as u', 'u.id', 'rm.user_id')
+      .distinct('u.email')
+      .where('rm.restaurant_id', rid)
+      .where('rm.status', 'ACTIVE')
+      .where('u.status', 'ACTIVE')
+      .whereIn('rm.role', ['OWNER', 'MANAGER']);
+    return rows.map((row) => String(row.email));
+  }
+
+  async createNotification(params: {
+    rid: string; type: string; title: string; message: string;
+    stockId: string | null; emailDispatched: boolean; emailRecipients: string;
+    emailStatus: 'SENT' | 'QUEUED_NO_SMTP' | 'SKIPPED' | 'FAILED';
+  }, trx: Knex | Knex.Transaction = this.db) {
+    const id = this.id('ntf');
+    const now = new Date().toISOString();
+    await trx('notifications').insert({
+      id, restaurant_id: params.rid, type: params.type,
+      title: params.title, message: params.message, stock_id: params.stockId,
+      email_dispatched: params.emailDispatched ? 1 : 0,
+      email_recipients: params.emailRecipients, email_status: params.emailStatus,
+      is_read: 0, created_at: now,
+    });
+    return {
+      id, restaurantId: params.rid, type: params.type, title: params.title,
+      message: params.message, stockId: params.stockId,
+      emailDispatched: params.emailDispatched,
+      emailRecipients: params.emailRecipients, emailStatus: params.emailStatus,
+      isRead: false, createdAt: now,
+    };
+  }
+
+  async findNotificationsForRestaurant(rid: string, limit = 30) {
+    const rows = await this.db('notifications')
+      .where({ restaurant_id: rid })
+      .orderBy('created_at', 'desc')
+      .limit(Math.max(1, Math.min(100, Math.floor(limit))));
+    return rows.map((row) => ({
+      id: String(row.id), restaurantId: String(row.restaurant_id),
+      type: String(row.type), title: String(row.title), message: String(row.message),
+      stockId: row.stock_id ? String(row.stock_id) : null,
+      emailDispatched: Boolean(row.email_dispatched),
+      emailRecipients: String(row.email_recipients || ''),
+      emailStatus: String(row.email_status || 'SKIPPED') as 'SENT' | 'QUEUED_NO_SMTP' | 'SKIPPED' | 'FAILED',
+      isRead: Boolean(row.is_read), createdAt: String(row.created_at),
+    }));
+  }
+
+  async markNotificationsRead(rid: string, notificationId?: string): Promise<number> {
+    const query = this.db('notifications').where({ restaurant_id: rid });
+    if (notificationId) query.where({ id: notificationId });
+    return query.update({ is_read: 1 });
+  }
+
+  async findRecentStockAlerts(rid: string, limit = 15) {
+    const rows = await this.db('notifications')
+      .where({ restaurant_id: rid, type: 'STOCK_CRITICAL' })
+      .orderBy('created_at', 'desc')
+      .limit(Math.max(1, Math.min(50, Math.floor(limit))));
+    return rows.map((row) => ({
+      id: String(row.id), restaurantId: String(row.restaurant_id),
+      type: String(row.type), title: String(row.title), message: String(row.message),
+      stockId: row.stock_id ? String(row.stock_id) : null,
+      emailDispatched: Boolean(row.email_dispatched),
+      emailRecipients: String(row.email_recipients || ''),
+      emailStatus: String(row.email_status || 'SKIPPED') as 'SENT' | 'QUEUED_NO_SMTP' | 'SKIPPED' | 'FAILED',
+      isRead: Boolean(row.is_read), createdAt: String(row.created_at),
+    }));
+  }
+
   async deductStocksForOrderItems(
     trx: Knex.Transaction,
     params: {
