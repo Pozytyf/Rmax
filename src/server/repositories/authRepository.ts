@@ -89,6 +89,18 @@ export class AuthRepository extends BaseRepository {
     ).run(restaurantId, sessionId, userId).changes;
   }
 
+  findMembershipForVenue(userId: string, restaurantId: string) {
+    const db = getDb();
+    return db.prepare(
+      `SELECT role, custom_permissions_json
+       FROM restaurant_members
+       WHERE user_id = ? AND restaurant_id = ? AND status = 'ACTIVE'
+       LIMIT 1`,
+    ).get(userId, restaurantId) as
+      | { role: string; custom_permissions_json: string | null }
+      | undefined;
+  }
+
   findMemberForPinLogin(restaurantId: string, userId: string) {
     const db = getDb();
     return db
