@@ -187,6 +187,31 @@ CREATE INDEX IF NOT EXISTS idx_staff_time_clocks_restaurant_in ON public.staff_t
 CREATE INDEX IF NOT EXISTS idx_staff_time_clocks_user_in ON public.staff_time_clocks(user_id, clock_in_at);
 CREATE INDEX IF NOT EXISTS idx_b2b_invoices_restaurant_created ON public.b2b_invoices(restaurant_id, created_at);
 
+-- Trusted tenant claims are supplied only by a server-issued Supabase JWT.
+CREATE OR REPLACE FUNCTION public.current_tenant_id()
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+AS $
+  SELECT NULLIF(COALESCE(
+    auth.jwt() ->> 'restaurant_id',
+    auth.jwt() -> 'app_metadata' ->> 'restaurant_id',
+    ''
+  ), '');
+$;
+
+CREATE OR REPLACE FUNCTION public.is_superadmin()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+AS $
+  SELECT COALESCE(
+    auth.jwt() ->> 'global_role',
+    auth.jwt() -> 'app_metadata' ->> 'global_role',
+    ''
+  ) = 'SUPER_ADMIN';
+$;
+
 -- Tenant isolation. Do not grant anon access: public QR/storefront requests go
 -- through the authenticated application API. Supabase Realtime requires a
 -- trusted JWT with restaurant_id/app_metadata.restaurant_id before these
