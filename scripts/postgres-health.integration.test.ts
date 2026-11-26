@@ -413,6 +413,39 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
       min_threshold: 1, unit_cost_xof: 1000, supplier_name: '',
       updated_at: now,
     });
+    const recipeCost = await db.transaction((trx) =>
+      knexRestaurantStockRepository.replaceMenuItemRecipe(trx, restaurantId, menuItemId, [
+        { stockId, quantityPerUnit: 1.5 },
+      ]),
+    );
+    assert.equal(recipeCost, 1500);
+    assert.equal((await knexRestaurantStockRepository.findMenuRecipes(restaurantId, menuItemId)).length, 1);
+
+    const extraCategoryId = await knexRestaurantStockRepository.createCategory(
+      restaurantId, 'Catégorie CRUD', 'KITCHEN', 10,
+    );
+    assert.ok(await knexRestaurantStockRepository.findCategory(extraCategoryId, restaurantId));
+    assert.equal(await knexRestaurantStockRepository.updateCategory(extraCategoryId, restaurantId, {
+      name: 'Catégorie modifiée', active: false,
+    }), 1);
+    assert.equal((await knexRestaurantStockRepository.findCategory(extraCategoryId, restaurantId))?.name, 'Catégorie modifiée');
+    assert.equal(await knexRestaurantStockRepository.countItemsInCategory(extraCategoryId, restaurantId), 0);
+    assert.equal(await knexRestaurantStockRepository.deleteCategory(extraCategoryId, restaurantId), 1);
+
+    const extraMenuItemId = await knexRestaurantStockRepository.createMenuItem({
+      rid: restaurantId, categoryId: String(category.id),
+      name: 'Article CRUD', description: 'fixture', priceXof: 1500,
+      costPriceXof: 400, imageUrl: null, available: true,
+      sortOrder: 5, optionsJson: '[]', optionGroupsJson: '[]',
+    });
+    assert.ok(await knexRestaurantStockRepository.findMenuItemById(extraMenuItemId, restaurantId));
+    assert.equal(await knexRestaurantStockRepository.updateMenuItem(extraMenuItemId, restaurantId, {
+      name: 'Article CRUD modifié', available: false,
+    }), 1);
+    assert.equal((await knexRestaurantStockRepository.findMenuItems(restaurantId)).find((row) => row.id === extraMenuItemId)?.name, 'Article CRUD modifié');
+    assert.equal(await knexRestaurantStockRepository.countOrderReferencesForMenuItem(extraMenuItemId, restaurantId), 0);
+    assert.equal(await knexRestaurantStockRepository.deleteMenuItem(extraMenuItemId, restaurantId), 1);
+
     const inventory = await db.transaction((trx) =>
       knexOperationsReadRepository.createInventoryCount(trx, {
         restaurantId, title: 'Inventaire test', stockSection: 'KITCHEN',
