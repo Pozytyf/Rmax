@@ -811,6 +811,59 @@ BEGIN
 END
 $tenant$;
 
+-- Isolation des tables opérationnelles ajoutées au schéma PostgreSQL.
+DO $operations$
+DECLARE
+  tbl TEXT;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY[
+    'menu_combos',
+    'promotions',
+    'cash_register_sessions',
+    'table_calls',
+    'loyalty_transactions',
+    'customer_reviews',
+    'inventory_counts',
+    'staff_shifts',
+    'staff_time_clocks',
+    'b2b_invoices'
+  ]
+  LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', tbl);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_%I ON public.%I', tbl, tbl);
+    EXECUTE format(
+      'CREATE POLICY tenant_isolation_%I ON public.%I FOR ALL USING (public.is_superadmin() OR restaurant_id = public.current_tenant_id()) WITH CHECK (public.is_superadmin() OR restaurant_id = public.current_tenant_id())',
+      tbl, tbl
+    );
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO authenticated, service_role', tbl);
+    EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon', tbl);
+  END LOOP;
+END
+$operations$;
+
+ALTER TABLE public.inventory_count_lines ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_inventory_count_lines ON public.inventory_count_lines;
+CREATE POLICY tenant_isolation_inventory_count_lines ON public.inventory_count_lines
+FOR ALL
+USING (
+  public.is_superadmin()
+  OR EXISTS (
+    SELECT 1 FROM public.inventory_counts ic
+    WHERE ic.id = inventory_count_id
+      AND ic.restaurant_id = public.current_tenant_id()
+  )
+)
+WITH CHECK (
+  public.is_superadmin()
+  OR EXISTS (
+    SELECT 1 FROM public.inventory_counts ic
+    WHERE ic.id = inventory_count_id
+      AND ic.restaurant_id = public.current_tenant_id()
+  )
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.inventory_count_lines TO authenticated, service_role;
+REVOKE ALL ON TABLE public.inventory_count_lines FROM anon;
+
 -- Activation RLS sur les tables métier
 ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_self_access_restaurants ON public.restaurants;
