@@ -22,16 +22,27 @@ import {
 } from './pricingEngine.ts';
 import { broadcastOrderTrackerEvent, broadcastRestaurantEvent } from '../ws.ts';
 import { verifyPaydunyaIpnSignature } from './paydunyaService.ts';
+import { knexPublicRepository } from '../repositories/publicRepository.knex.ts';
+import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
 import { BaseService } from './BaseService.ts';
 import { AppError } from './errors.ts';
+
+function isLegacyPublicTestRuntime(): boolean {
+  const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
+  return process.env.NODE_ENV === 'test' && !['pg', 'postgres', 'postgresql'].includes(client);
+}
+
+const publicReadRepository = (
+  isLegacyPublicTestRuntime() ? publicRepository : knexPublicRepository
+) as unknown as typeof publicRepository;
 
 export class PublicService extends BaseService<PublicRepository> {
   constructor(repo = publicRepository) {
     super(repo);
   }
 
-  getActivePlans() {
-    const rows = publicRepository.findActivePlans();
+  async getActivePlans() {
+    const rows = await publicReadRepository.findActivePlans();
     return rows.map((r) => ({
       id: r.id,
       code: r.code,
@@ -50,7 +61,7 @@ export class PublicService extends BaseService<PublicRepository> {
     }));
   }
 
-  getPlatformSettings(): Record<string, string> {
+  async getPlatformSettings(): Promise<Record<string, string>> {
     const allowedPublicKeys = new Set([
       'contact_email',
       'contact_phone',
@@ -60,7 +71,7 @@ export class PublicService extends BaseService<PublicRepository> {
       'maintenance_mode',
       'platform_announcement',
     ]);
-    const rows = publicRepository.findAllPlatformSettings();
+    const rows = await publicReadRepository.findAllPlatformSettings();
     const settings: Record<string, string> = {};
     for (const row of rows) {
       if (allowedPublicKeys.has(row.key)) {
@@ -70,7 +81,7 @@ export class PublicService extends BaseService<PublicRepository> {
     return settings;
   }
 
-  submitContactLead(body: Record<string, unknown>) {
+  async submitContactLead(body: Record<string, unknown>) {
     const { fullName, email, phone, restaurantName, city, message, website } =
       body || {};
     if (website) {
@@ -90,7 +101,7 @@ export class PublicService extends BaseService<PublicRepository> {
       );
     }
 
-    const id = publicRepository.createLead({
+    const id = await publicReadRepository.createLead({
       leadType: 'CONTACT',
       fullName: fullName.trim(),
       email: email.trim().toLowerCase(),
@@ -108,7 +119,7 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  submitDemoRequest(body: Record<string, unknown>) {
+  async submitDemoRequest(body: Record<string, unknown>) {
     const { fullName, email, phone, restaurantName, city, message, website } =
       body || {};
     if (website) {
@@ -128,7 +139,7 @@ export class PublicService extends BaseService<PublicRepository> {
       );
     }
 
-    const id = publicRepository.createLead({
+    const id = await publicReadRepository.createLead({
       leadType: 'DEMO_REQUEST',
       fullName: fullName.trim(),
       email: email.trim().toLowerCase(),
@@ -146,7 +157,7 @@ export class PublicService extends BaseService<PublicRepository> {
   }
 
   async generateQrSvg(token: string, baseUrl: string): Promise<string> {
-    const qrRow = publicRepository.findQrContextByToken(token);
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -167,11 +178,12 @@ export class PublicService extends BaseService<PublicRepository> {
     }
   }
 
-  private mapPublicCatalog(restaurantId: string) {
-    const db = getDb();
-    const categories = publicRepository.findActiveCategories(restaurantId);
-    const itemsRaw = publicRepository.findAvailableMenuItems(restaurantId);
-    const activePromos = loadActivePromotions(db, restaurantId);
+  private async mapPublicCatalog(restaurantId: string) {
+    const categories = await publicReadRepository.findActiveCategories(restaurantId);
+    const itemsRaw = await publicReadRepository.findAvailableMenuItems(restaurantId);
+    const activePromos = isLegacyPublicTestRuntime()
+      ? loadActivePromotions(getDb(), restaurantId)
+      : (await knexOperationsReadRepository.findPromotions(restaurantId)).filter((promo) => promo.active);
     const items = itemsRaw.map((it) => {
       const basePrice = Number(it.price_xof);
       const hh = computeHappyHourForItem({
@@ -193,7 +205,9 @@ export class PublicService extends BaseService<PublicRepository> {
         optionGroups: parseOptionGroups(it.option_groups_json),
       };
     });
-    const combos = operationsRepository.findCombos(restaurantId, true);
+    const combos = isLegacyPublicTestRuntime()
+      ? operationsRepository.findCombos(restaurantId, true)
+      : await knexOperationsReadRepository.findCombos(restaurantId, true);
     return { categories, items, combos };
   }
 
@@ -212,8 +226,8 @@ export class PublicService extends BaseService<PublicRepository> {
     }
   }
 
-  getQrMenuContext(token: string) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async getQrMenuContext(token: string) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow) {
       throw new AppError(404, 'QR code introuvable ou invalide.');
     }
@@ -228,16 +242,16 @@ export class PublicService extends BaseService<PublicRepository> {
     const restaurantId = String(qrRow.restaurant_id);
     const tableId = String(qrRow.table_id);
     const expiresAt = new Date(Date.now() + 4 * 3600 * 1000).toISOString();
-    const sessionId = publicRepository.createQrTableSession({
+    const sessionId = await publicReadRepository.createQrTableSession({
       restaurantId,
       tableId,
       qrToken: token,
       expiresAt,
     });
 
-    const catalog = this.mapPublicCatalog(restaurantId);
-    const ratingSummary = publicRepository.findPublicRatingStats(restaurantId);
-    const waiters = publicRepository.findServiceWaiterNames(restaurantId);
+    const catalog = await this.mapPublicCatalog(restaurantId);
+    const ratingSummary = await publicReadRepository.findPublicRatingStats(restaurantId);
+    const waiters = await publicReadRepository.findServiceWaiterNames(restaurantId);
 
     return {
       sessionId,
@@ -266,8 +280,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  getStorefrontContext(slug: string) {
-    const resto = publicRepository.findStorefrontBySlug(slug);
+  async getStorefrontContext(slug: string) {
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Vitrine restaurant introuvable.');
     }
@@ -280,8 +294,8 @@ export class PublicService extends BaseService<PublicRepository> {
     }
 
     const restaurantId = String(resto.id);
-    const catalog = this.mapPublicCatalog(restaurantId);
-    const ratingSummary = publicRepository.findPublicRatingStats(restaurantId);
+    const catalog = await this.mapPublicCatalog(restaurantId);
+    const ratingSummary = await publicReadRepository.findPublicRatingStats(restaurantId);
 
     return {
       restaurant: {
@@ -1055,8 +1069,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  trackQrOrder(token: string, orderId: string) {
-    const result = publicRepository.findTrackedQrOrder(token, orderId);
+  async trackQrOrder(token: string, orderId: string) {
+    const result = await publicReadRepository.findTrackedQrOrder(token, orderId);
     if (!result) {
       throw new AppError(404, 'Commande introuvable pour cette table.');
     }
@@ -1088,8 +1102,8 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  trackStorefrontOrder(slug: string, orderId: string) {
-    const result = publicRepository.findTrackedStorefrontOrder(slug, orderId);
+  async trackStorefrontOrder(slug: string, orderId: string) {
+    const result = await publicReadRepository.findTrackedStorefrontOrder(slug, orderId);
     if (!result) {
       throw new AppError(404, 'Commande introuvable.');
     }
