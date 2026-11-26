@@ -2,7 +2,7 @@
 
 Branche de travail : `fix/chore-1-postgresql-persistence`
 Merge request : !1 (Draft)
-Dernier pipeline complet validé : [3117518872](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117518872)
+Dernier pipeline complet validé : [3117589123](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117589123)
 
 ## Chantier 1 — PostgreSQL et persistance
 
@@ -31,17 +31,19 @@ Fondations de configuration, migrations, intégrité de schéma et CI validées.
 - Application sur Supabase `RestoMax V1` des migrations SQL 010 à 014 : le schéma compte maintenant 46 tables et 46 politiques RLS. Les tables sensibles (`users`, `sessions`, `auth_tokens`, `knex_migrations`, `knex_migrations_lock`) ont des politiques deny-all et aucun privilège Data API.
 - Ajout de clés étrangères manquantes entre restaurants, membres, utilisateurs, commandes, lignes, paiements, stocks, recettes, achats, fidélité, inventaires et personnel. Les contraintes sont ajoutées `NOT VALID` puis validées, et les doublons équivalents déjà déclarés sont ignorés.
 - Ajout d'un index unique sur `(restaurant_id, order_number)` après contrôle préalable des doublons.
+- Ajout d'index sur les colonnes FK de caisse, fidélité et appels de table. L'advisor Supabase performance ne signale plus de clés étrangères non indexées ; les index inutilisés sont attendus sur une base sans charge métier.
 - Ajout d'une CI avec typecheck, tests unitaires/routes, migrations PostgreSQL, smoke test PostgreSQL, build.
 - Durcissement appliqué directement sur Supabase `RestoMax V1` : retrait des privilèges d'exécution de `public.rls_auto_enable()` pour `PUBLIC`, `anon` et `authenticated`; `search_path=pg_catalog` fixé sur les fonctions RLS; création des 11 tables métier manquantes; ajout des politiques tenant et politiques enfants; accès Data API révoqué pour les tables sensibles internes. L'event trigger `ensure_rls` reste actif.
 - Ajout de tests pour les règles de configuration, le verrou de migrations, la présence des tables, RLS, clés étrangères et unicité des numéros de commande.
 
 ### Validation réelle GitLab
-Pipeline [3117518872](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117518872) : **succès sur les six jobs**.
+Pipeline [3117589123](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117589123) : **succès sur les six jobs**.
 - `tsc --noEmit` : succès.
 - Tests ciblés de configuration : succès.
 - Suite complète actuelle : 81 tests réussis, 0 échec.
 - Migrations sur PostgreSQL 16 : migrations 001 à 009 appliquées, état sans migration en attente, rollback complet du batch puis réapplication réussie.
 - Smoke test PostgreSQL : connexion, schéma, RLS sur les 11 nouvelles tables, clés étrangères et index unique vérifiés.
+- Test SQL Supabase : 46 politiques, privilèges, search_path et lecture/écriture inter-tenant refusées vérifiés sur PostgreSQL 16.
 - Build Vite/PWA : succès.
 
 Le build signale encore un bundle frontend principal supérieur à 700 kB ; c'est une optimisation de performance à traiter dans le chantier UX/performance.
