@@ -69,7 +69,7 @@ REVOKE ALL ON TABLE public.auth_tokens FROM anon, authenticated;
 -- Knex bookkeeping tables exist only after the Knex migration runner has
 -- initialized them. A fresh SQL-only Supabase bootstrap must not fail if they
 -- have not been created yet.
-DO $
+DO $knex_guard$
 BEGIN
   IF to_regclass('public.knex_migrations') IS NOT NULL THEN
     ALTER TABLE public.knex_migrations ENABLE ROW LEVEL SECURITY;
@@ -79,8 +79,8 @@ BEGIN
     ALTER TABLE public.knex_migrations_lock ENABLE ROW LEVEL SECURITY;
     REVOKE ALL ON TABLE public.knex_migrations_lock FROM anon, authenticated;
   END IF;
-END
-$;
+END;
+$knex_guard$;
 
 -- Child records are scoped through their parent tenant-owned row.
 ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;

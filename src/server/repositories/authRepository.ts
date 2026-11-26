@@ -82,6 +82,16 @@ export class AuthRepository extends BaseRepository {
     }>;
   }
 
+  findMembershipForVenue(userId: string, restaurantId: string) {
+    return this.db
+      .prepare(
+        "SELECT role, custom_permissions_json FROM restaurant_members WHERE user_id = ? AND restaurant_id = ? AND status = 'ACTIVE'",
+      )
+      .get(userId, restaurantId) as
+      | { role: string; custom_permissions_json: string }
+      | undefined;
+  }
+
   switchSessionRestaurant(sessionId: string, userId: string, restaurantId: string) {
     const db = getDb();
     return db.prepare(
