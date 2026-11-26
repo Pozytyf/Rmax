@@ -8,6 +8,7 @@ import { recordAuditWithKnex, resolveAuthContextWithKnex, signSessionToken } fro
 import { knexPublicRepository } from '../src/server/repositories/publicRepository.knex.ts';
 import { knexOperationsReadRepository } from '../src/server/repositories/operationsRepository.knex.ts';
 import { knexRestaurantStockRepository } from '../src/server/repositories/restaurantRepository.knex.ts';
+import { knexSuperadminSettingsRepository } from '../src/server/repositories/superadminRepository.knex.ts';
 
 test('selected PostgreSQL pool is reachable and schema is fully migrated', async () => {
   const health = await checkSupabaseHealth();
@@ -444,6 +445,20 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     await db('users').where({ id: userId }).del();
     await db('restaurants').where({ id: restaurantId }).del();
     await db('tenants').where({ id: restaurantId }).del();
+  }
+});
+
+
+test('PostgreSQL superadmin platform settings upsert and read are persistent', async () => {
+  const key = `it_platform_setting_${crypto.randomUUID().replace(/-/g, '')}`;
+  const db = getKnex();
+  try {
+    await knexSuperadminSettingsRepository.upsertPlatformSettings([[key, 'first']]);
+    assert.equal((await knexSuperadminSettingsRepository.findPlatformSettings()).find((row) => row.key === key)?.value, 'first');
+    await knexSuperadminSettingsRepository.upsertPlatformSettings([[key, 'updated']]);
+    assert.equal((await knexSuperadminSettingsRepository.findPlatformSettings()).find((row) => row.key === key)?.value, 'updated');
+  } finally {
+    await db('platform_settings').where({ key }).del();
   }
 });
 
