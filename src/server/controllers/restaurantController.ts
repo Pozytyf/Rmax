@@ -115,9 +115,9 @@ export const restaurantController = {
     }
   },
 
-  getOrders(req: Request, res: Response) {
+  async getOrders(req: Request, res: Response) {
     try {
-      const orders = restaurantService.getOrders(req.auth!.restaurantId!);
+      const orders = await restaurantService.getOrders(req.auth!.restaurantId!);
       res.json({ orders });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement commandes.');
@@ -140,9 +140,9 @@ export const restaurantController = {
     }
   },
 
-  updateOrderStatus(req: Request, res: Response) {
+  async updateOrderStatus(req: Request, res: Response) {
     try {
-      restaurantService.updateOrderStatus(
+      await restaurantService.updateOrderStatus(
         req.auth!,
         String(req.params.id),
         req.body?.status,
