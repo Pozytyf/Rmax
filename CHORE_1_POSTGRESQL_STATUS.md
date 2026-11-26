@@ -29,8 +29,8 @@ Fondations de configuration, migrations, intégrité de schéma, CI et parcours 
 - Ajout de `recordAuditWithKnex` et `resolveAuthContextWithKnex`; les middlewares d'authentification et la vérification des sessions passent par PostgreSQL en production.
 - Les changements de mot de passe et la consommation des jetons de vérification/reset sont transactionnels et verrouillés contre la réutilisation concurrente.
 - La création d'un restaurant crée aussi la ligne `tenants` requise par la FK `users.tenant_id`.
-- Ajout des migrations Knex 015 à 018 : seed des plans SaaS, groupes d'options menu, champs de commande publique et paramètres vitrine/fidélité.
-- Ajout des migrations SQL Supabase 017 à 020 pour appliquer ces évolutions au schéma Supabase.
+- Ajout des migrations Knex 015 à 019 : seed des plans SaaS, groupes d'options menu, champs de commande publique, paramètres vitrine/fidélité et compteur atomique de numéros de commande.
+- Ajout des migrations SQL Supabase 017 à 021 pour appliquer ces évolutions au schéma Supabase.
 - `JWT_SECRET` est désormais obligatoire en production et doit faire au moins 32 octets ; les tokens sont vérifiés avec l'algorithme HS256 explicitement.
 - Les salles WebSocket de commande exigent soit une session restaurant autorisée, soit un QR actif lié à la même table que la commande. Le navigateur QR transmet son jeton de table pour l'accès public limité.
 - Le health check réutilise le pool Knex de l'application.
@@ -38,7 +38,7 @@ Fondations de configuration, migrations, intégrité de schéma, CI et parcours 
 - Ajout de `publicRepository.knex.ts` et `operationsRepository.knex.ts` pour les lectures publiques/catalogue, promos/combos, suivi QR/storefront, fidélité et formulaires de contact/démo.
 - Migration des lectures correspondantes dans `publicService` et `publicController`. Les mutations de commandes, paiements, avis et appels de table restent à migrer.
 - RLS activé explicitement sur les nouvelles tables métier, avec politiques tenant basées sur des claims vérifiés et sans accès métier anonyme.
-- Application sur Supabase `RestoMax V1` des migrations SQL 010 à 015 puis 017 à 020 : le projet compte 46 politiques RLS sur 46 tables protégées. Les tables sensibles (`users`, `sessions`, `auth_tokens`, `knex_migrations`, `knex_migrations_lock`) ont des politiques deny-all et aucun privilège Data API.
+- Application sur Supabase `RestoMax V1` des migrations SQL 010 à 015 puis 017 à 021 : le projet compte 47 politiques RLS sur 47 tables protégées. Les tables sensibles (`users`, `sessions`, `auth_tokens`, `knex_migrations`, `knex_migrations_lock`) ont des politiques deny-all et aucun privilège Data API.
 - Ajout de clés étrangères manquantes entre restaurants, membres, utilisateurs, commandes, lignes, paiements, stocks, recettes, achats, fidélité, inventaires et personnel. Les contraintes sont ajoutées `NOT VALID` puis validées, et les doublons équivalents déjà déclarés sont ignorés.
 - Ajout d'un index unique sur `(restaurant_id, order_number)` après contrôle préalable des doublons.
 - Ajout d'index sur les colonnes FK de caisse, fidélité et appels de table. L'advisor Supabase performance ne signale plus de clés étrangères non indexées ; les index inutilisés sont attendus sur une base sans charge métier.
@@ -73,7 +73,7 @@ Le relevé statique initial comptait 281 appels `getDb()`, 435 appels `.prepare(
 7. Mettre en place une authentification Realtime Supabase fiable avant d'ajouter des policies RLS permettant l'accès du navigateur.
 
 ### État des migrations sur le projet Supabase réel
-Sur `RestoMax V1`, le schéma des migrations 007 à 009 a été vérifié (11 tables opérationnelles, 21 clés étrangères et index unique des numéros de commande). Les effets des migrations Knex 015 à 018 ont été appliqués via les migrations SQL Supabase 017 à 020, puis les noms correspondants ont été enregistrés dans `knex_migrations` après vérification des colonnes et des données. Le journal Knex contient maintenant 13 migrations (001 à 009 et 015 à 018) et `knex_migrations_lock.is_locked=0`. Les plans Essentiel, Professionnel et Premium sont présents. Le journal Supabase SQL inclut les migrations 010 à 015 et 017 à 020.
+Sur `RestoMax V1`, le schéma des migrations 007 à 009 a été vérifié (11 tables opérationnelles, 21 clés étrangères et index unique des numéros de commande). Les effets des migrations Knex 015 à 018 ont été appliqués via les migrations SQL Supabase 017 à 020, puis les noms correspondants ont été enregistrés dans `knex_migrations` après vérification des colonnes et des données. Le journal Knex contient maintenant 14 migrations (001 à 009 et 015 à 019) et `knex_migrations_lock.is_locked=0`. Les plans Essentiel, Professionnel et Premium sont présents. Le journal Supabase SQL inclut les migrations 010 à 015 et 017 à 021.
 
 ### Sécurité Supabase — état après correction
 - 46 politiques RLS sur 46 tables publiques.
