@@ -61,6 +61,7 @@ async function main(): Promise<void> {
       '202611260015_index_operational_foreign_keys.sql',
       '202611260017_add_option_groups_json_to_menu_items.sql',
       '202611260018_add_public_order_fields.sql',
+      '202611260019_add_public_restaurant_settings.sql',
     ]) {
       const migrationPath = path.resolve(process.cwd(), 'supabase/migrations', migration);
       await client.query(await fs.readFile(migrationPath, 'utf8'));
@@ -109,6 +110,11 @@ async function main(): Promise<void> {
       "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name IN ('customer_phone', 'delivery_address', 'delivery_zone', 'delivery_fee_xof', 'scheduled_slot', 'promo_code', 'loyalty_points_used', 'loyalty_points_earned')",
     );
     assert.equal(publicOrderColumns.rowCount, 8, 'Bootstrap schema is missing public order fields');
+
+    const publicRestaurantColumns = await client.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'restaurants' AND column_name IN ('loyalty_enabled', 'loyalty_points_per_1000_xof', 'loyalty_xof_per_point', 'storefront_enabled', 'delivery_enabled', 'delivery_zones_json', 'pickup_slots_json')",
+    );
+    assert.equal(publicRestaurantColumns.rowCount, 7, 'Bootstrap schema is missing public restaurant settings');
 
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",

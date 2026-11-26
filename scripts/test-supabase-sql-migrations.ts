@@ -22,6 +22,7 @@ const migrationFiles = [
   '202611260015_index_operational_foreign_keys.sql',
   '202611260017_add_option_groups_json_to_menu_items.sql',
   '202611260018_add_public_order_fields.sql',
+  '202611260019_add_public_restaurant_settings.sql',
 ];
 
 async function main(): Promise<void> {

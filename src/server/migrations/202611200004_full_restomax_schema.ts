@@ -53,6 +53,13 @@ export async function up(knex: Knex): Promise<void> {
       t.string('paydunya_public_key').notNullable().defaultTo('');
       t.string('paydunya_private_key').notNullable().defaultTo('');
       t.string('paydunya_token').notNullable().defaultTo('');
+      t.integer('loyalty_enabled').notNullable().defaultTo(1);
+      t.integer('loyalty_points_per_1000_xof').notNullable().defaultTo(10);
+      t.integer('loyalty_xof_per_point').notNullable().defaultTo(25);
+      t.integer('storefront_enabled').notNullable().defaultTo(1);
+      t.integer('delivery_enabled').notNullable().defaultTo(1);
+      t.text('delivery_zones_json').notNullable().defaultTo('[]');
+      t.text('pickup_slots_json').notNullable().defaultTo('[]');
       t.text('printer_settings_json')
         .notNullable()
         .defaultTo(
