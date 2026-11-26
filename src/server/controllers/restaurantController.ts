@@ -23,9 +23,9 @@ export const restaurantController = {
     }
   },
 
-  createCategory(req: Request, res: Response) {
+  async createCategory(req: Request, res: Response) {
     try {
-      const category = restaurantService.createCategory(
+      const category = await restaurantService.createCategory(
         req.auth!.restaurantId!,
         req.body || {},
       );
@@ -35,9 +35,9 @@ export const restaurantController = {
     }
   },
 
-  updateCategory(req: Request, res: Response) {
+  async updateCategory(req: Request, res: Response) {
     try {
-      restaurantService.updateCategory(
+      await restaurantService.updateCategory(
         req.auth!.restaurantId!,
         String(req.params.id),
         req.body || {},
@@ -48,27 +48,27 @@ export const restaurantController = {
     }
   },
 
-  deleteCategory(req: Request, res: Response) {
+  async deleteCategory(req: Request, res: Response) {
     try {
-      restaurantService.deleteCategory(req.auth!, String(req.params.id));
+      await restaurantService.deleteCategory(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression catégorie.');
     }
   },
 
-  createMenuItem(req: Request, res: Response) {
+  async createMenuItem(req: Request, res: Response) {
     try {
-      const id = restaurantService.createMenuItem(req.auth!, req.body || {});
+      const id = await restaurantService.createMenuItem(req.auth!, req.body || {});
       res.status(201).json({ id });
     } catch (err) {
       handleControllerError(res, err, 'Erreur création article.');
     }
   },
 
-  updateMenuItem(req: Request, res: Response) {
+  async updateMenuItem(req: Request, res: Response) {
     try {
-      restaurantService.updateMenuItem(
+      await restaurantService.updateMenuItem(
         req.auth!.restaurantId!,
         String(req.params.id),
         req.body || {},
@@ -79,20 +79,20 @@ export const restaurantController = {
     }
   },
 
-  deleteMenuItem(req: Request, res: Response) {
+  async deleteMenuItem(req: Request, res: Response) {
     try {
-      restaurantService.deleteMenuItem(req.auth!, String(req.params.id));
+      await restaurantService.deleteMenuItem(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression article.');
     }
   },
 
-  getRecipes(req: Request, res: Response) {
+  async getRecipes(req: Request, res: Response) {
     try {
       const menuItemId =
         typeof req.query.menuItemId === 'string' ? req.query.menuItemId : undefined;
-      const recipes = restaurantService.getRecipes(
+      const recipes = await restaurantService.getRecipes(
         req.auth!.restaurantId!,
         menuItemId,
       );
@@ -102,9 +102,9 @@ export const restaurantController = {
     }
   },
 
-  updateMenuItemRecipe(req: Request, res: Response) {
+  async updateMenuItemRecipe(req: Request, res: Response) {
     try {
-      const recipes = restaurantService.updateMenuItemRecipe(
+      const recipes = await restaurantService.updateMenuItemRecipe(
         req.auth!,
         String(req.params.id),
         req.body || {},
