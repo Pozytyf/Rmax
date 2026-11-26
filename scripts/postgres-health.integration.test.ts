@@ -510,6 +510,34 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
       /historique ou est utilisé/,
     );
 
+    const purchaseOrder = await db.transaction((trx) =>
+      knexRestaurantStockRepository.createPurchaseOrder(trx, {
+        id: `it_po_${suffix}`, rid: restaurantId,
+        supplierName: 'Fournisseur test', status: 'ORDERED',
+        totalCostXof: 3000, notes: 'integration purchase',
+        expectedDate: future, userId,
+        items: [{
+          id: `it_poi_${suffix}`, stockId, stockName: 'Stock integration',
+          unit: 'kg', quantity: 3, unitCostXof: 1000, lineTotalXof: 3000,
+        }],
+      }),
+    );
+    assert.match(purchaseOrder.poNumber, /^PO-/);
+    assert.equal((await knexRestaurantStockRepository.findPurchaseOrders(restaurantId)).some((row) => row.id === `it_po_${suffix}`), true);
+    const receivedPo = await db.transaction((trx) =>
+      knexRestaurantStockRepository.updatePurchaseOrderStatus(trx, {
+        poId: `it_po_${suffix}`, rid: restaurantId, status: 'RECEIVED', userId,
+      }),
+    );
+    assert.equal(receivedPo.supplierName, 'Fournisseur test');
+    assert.equal(Number((await db('stocks').select('quantity').where({ id: stockId, restaurant_id: restaurantId }).first())?.quantity), 11);
+    await assert.rejects(
+      db.transaction((trx) => knexRestaurantStockRepository.updatePurchaseOrderStatus(trx, {
+        poId: `it_po_${suffix}`, rid: restaurantId, status: 'RECEIVED', userId,
+      })),
+      /déjà clôturé/,
+    );
+
     await knexRestaurantStockRepository.upsertStockAlertSettings({
       rid: restaurantId, inAppEnabled: true, emailEnabled: false,
       recipientEmails: '', smtpHost: '', smtpPort: 587,
@@ -615,6 +643,8 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     await db('subscriptions').where({ restaurant_id: `it_branch_${suffix}` }).del();
     await db('restaurants').where({ id: `it_branch_${suffix}` }).del();
     await db('tenants').where({ id: `it_branch_${suffix}` }).del();
+    await db('purchase_order_items').whereIn('purchase_order_id', db('purchase_orders').select('id').where({ restaurant_id: restaurantId })).del();
+    await db('purchase_orders').where({ restaurant_id: restaurantId }).del();
     await db('notifications').where({ restaurant_id: restaurantId }).del();
     await db('stock_alert_settings').where({ restaurant_id: restaurantId }).del();
     await db('b2b_invoices').where({ restaurant_id: restaurantId }).del();
