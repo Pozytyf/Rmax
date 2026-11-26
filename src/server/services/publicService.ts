@@ -529,7 +529,7 @@ export class PublicService extends BaseService<PublicRepository> {
       throw new AppError(400, 'Votre panier est vide.');
     }
 
-    const qrRow = publicRepository.findQrContextByToken(token);
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow || qrRow.qr_status !== 'ACTIVE') {
       throw new AppError(410, 'QR code révoqué ou invalide.');
     }
@@ -554,7 +554,7 @@ export class PublicService extends BaseService<PublicRepository> {
     }
 
     if (idempotencyKey) {
-      const existing = publicRepository.findOrderByIdempotencyKey(
+      const existing = await publicReadRepository.findOrderByIdempotencyKey(
         restaurantId,
         String(idempotencyKey),
       );
@@ -574,7 +574,7 @@ export class PublicService extends BaseService<PublicRepository> {
     const db = getDb();
     const now = new Date().toISOString();
     const orderId = generateId('ord');
-    const orderCount = publicRepository.countOrdersForRestaurant(restaurantId);
+    const orderCount = await publicReadRepository.countOrdersForRestaurant(restaurantId);
     const orderNumber = `CMD-${1001 + orderCount}`;
 
     let deductionResult: {
@@ -753,7 +753,7 @@ export class PublicService extends BaseService<PublicRepository> {
       throw new AppError(400, 'Votre panier est vide.');
     }
 
-    const resto = publicRepository.findStorefrontBySlug(slug);
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Vitrine restaurant introuvable.');
     }
