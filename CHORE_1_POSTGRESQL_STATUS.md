@@ -58,12 +58,13 @@ Le build signale encore un bundle frontend principal supérieur à 700 kB ; c'es
 ### Sécurité Supabase — état après correction
 - 46 politiques RLS sur 46 tables publiques.
 - Advisor Supabase sécurité : aucun finding.
+- Test RLS réel sur `RestoMax V1`, exécuté dans une transaction annulée : avec un JWT de test `restaurant_id=A`, le rôle `authenticated` ne voit que la commande du restaurant A (`visible_orders=1`), ne peut pas mettre à jour la commande du restaurant B (`cross_tenant_updates=0`) et une insertion inter-tenant est rejetée par RLS. Les fixtures ont été annulées ; aucune donnée métier n'a été conservée.
 - `anon` ne peut pas lire les commandes ; `authenticated` a le privilège SQL mais reste limité par les politiques tenant.
 - `users`, `sessions`, `auth_tokens` et les tables de migration sont explicitement refusées aux rôles Data API.
 - `public.rls_auto_enable()` n'est plus exécutable par `PUBLIC`, `anon` ou `authenticated`; l'event trigger `ensure_rls` reste actif.
 - Les fonctions tenant ont `search_path=pg_catalog`.
 
-Le JWT du navigateur n'est pas encore transmis à Supabase Realtime. Les policies sont en place, mais les abonnements tenant ne sont pas certifiés fonctionnels tant que le pont d'authentification Supabase n'est pas réalisé. Le backend SQL utilise une connexion privilégiée et doit continuer à appliquer explicitement le tenant dans chaque repository.
+Le JWT du navigateur n'est pas encore transmis à Supabase Realtime. Les politiques RLS sont vérifiées directement au niveau PostgreSQL, mais les abonnements tenant Realtime ne sont pas certifiés fonctionnels tant que le pont d'authentification Supabase n'est pas réalisé. Le backend SQL utilise une connexion privilégiée et doit continuer à appliquer explicitement le tenant dans chaque repository.
 
 ### Déploiement
 Ne pas fusionner ni déployer cette branche en l'état. Les garde-fous SQLite rendent volontairement les opérations métier encore non migrées indisponibles quand PostgreSQL est sélectionné. Aucune migration de données métier de production n'a été réalisée.
