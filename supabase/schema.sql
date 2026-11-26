@@ -820,6 +820,109 @@ WITH CHECK (
 );
 
 -- ============================================================================
+-- Additional tenant and platform policies for tables outside the simple restaurant_id loop.
+ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_self_access_restaurants ON public.restaurants;
+CREATE POLICY tenant_self_access_restaurants ON public.restaurants
+FOR ALL USING (public.is_superadmin() OR id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR id = public.current_tenant_id());
+
+ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_self_access_tenants ON public.tenants;
+CREATE POLICY tenant_self_access_tenants ON public.tenants
+FOR ALL USING (public.is_superadmin() OR id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR id = public.current_tenant_id());
+
+ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_subscriptions ON public.subscriptions;
+CREATE POLICY tenant_isolation_subscriptions ON public.subscriptions
+FOR ALL USING (public.is_superadmin() OR restaurant_id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR restaurant_id = public.current_tenant_id());
+
+ALTER TABLE public.platform_invoices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_platform_invoices ON public.platform_invoices;
+CREATE POLICY tenant_isolation_platform_invoices ON public.platform_invoices
+FOR ALL USING (public.is_superadmin() OR restaurant_id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR restaurant_id = public.current_tenant_id());
+
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_audit_logs ON public.audit_logs;
+CREATE POLICY tenant_isolation_audit_logs ON public.audit_logs
+FOR ALL USING (public.is_superadmin() OR restaurant_id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR restaurant_id = public.current_tenant_id());
+
+ALTER TABLE public.platform_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS platform_settings_superadmin_only ON public.platform_settings;
+CREATE POLICY platform_settings_superadmin_only ON public.platform_settings
+FOR ALL USING (public.is_superadmin())
+WITH CHECK (public.is_superadmin());
+
+ALTER TABLE public.contact_leads ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS contact_leads_superadmin_only ON public.contact_leads;
+CREATE POLICY contact_leads_superadmin_only ON public.contact_leads
+FOR ALL USING (public.is_superadmin())
+WITH CHECK (public.is_superadmin());
+
+ALTER TABLE public.qr_table_sessions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_qr_table_sessions ON public.qr_table_sessions;
+CREATE POLICY tenant_isolation_qr_table_sessions ON public.qr_table_sessions
+FOR ALL USING (public.is_superadmin() OR restaurant_id = public.current_tenant_id())
+WITH CHECK (public.is_superadmin() OR restaurant_id = public.current_tenant_id());
+
+ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_order_items ON public.order_items;
+CREATE POLICY tenant_isolation_order_items ON public.order_items
+FOR ALL
+USING (
+  public.is_superadmin()
+  OR EXISTS (SELECT 1 FROM public.orders o
+             WHERE o.id = order_id AND o.restaurant_id = public.current_tenant_id())
+)
+WITH CHECK (
+  public.is_superadmin()
+  OR EXISTS (SELECT 1 FROM public.orders o
+             WHERE o.id = order_id AND o.restaurant_id = public.current_tenant_id())
+);
+
+ALTER TABLE public.ticket_messages ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_ticket_messages ON public.ticket_messages;
+CREATE POLICY tenant_isolation_ticket_messages ON public.ticket_messages
+FOR ALL
+USING (
+  public.is_superadmin()
+  OR EXISTS (SELECT 1 FROM public.support_tickets t
+             WHERE t.id = ticket_id AND t.restaurant_id = public.current_tenant_id())
+)
+WITH CHECK (
+  public.is_superadmin()
+  OR EXISTS (SELECT 1 FROM public.support_tickets t
+             WHERE t.id = ticket_id AND t.restaurant_id = public.current_tenant_id())
+);
+
+ALTER TABLE public.purchase_order_items ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_purchase_order_items ON public.purchase_order_items;
+CREATE POLICY tenant_isolation_purchase_order_items ON public.purchase_order_items
+FOR ALL
+USING (
+  public.is_superadmin()
+  OR EXISTS (SELECT 1 FROM public.purchase_orders p
+             WHERE p.id = purchase_order_id AND p.restaurant_id = public.current_tenant_id())
+)
+WITH CHECK (
+  public.is_superadmin()
+  OR EXISTS (SELECT 1 FROM public.purchase_orders p
+             WHERE p.id = purchase_order_id AND p.restaurant_id = public.current_tenant_id())
+);
+
+-- Sensitive authentication and migration metadata are backend-only; password
+-- hashes, PIN hashes, reset tokens and session identifiers are never exposed.
+REVOKE ALL ON TABLE public.users FROM anon, authenticated;
+REVOKE ALL ON TABLE public.sessions FROM anon, authenticated;
+REVOKE ALL ON TABLE public.auth_tokens FROM anon, authenticated;
+REVOKE ALL ON TABLE public.schema_migrations FROM anon, authenticated;
+REVOKE ALL ON TABLE public.knex_migrations FROM anon, authenticated;
+REVOKE ALL ON TABLE public.knex_migrations_lock FROM anon, authenticated;
+
 -- Keep the internal RLS DDL event-trigger function off the public RPC surface.
 DO $
 BEGIN
