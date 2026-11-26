@@ -114,6 +114,317 @@ export class KnexPublicRepository {
       .first();
   }
 
+  async nextOrderNumber(trx: Knex.Transaction, restaurantId: string): Promise<string> {
+    const maxResult = await trx.raw(
+      `SELECT COALESCE(
+         MAX(CASE
+           WHEN order_number ~ '^CMD-[0-9]+
+    const row = await this.db('orders').where({ restaurant_id: restaurantId }).count({ c: '*' }).first();
+    return Number(row?.c || 0);
+  }
+
+  async findMenuItemWithStation(menuItemId: string, restaurantId: string) {
+    return this.db('menu_items as m')
+      .join('menu_categories as c', 'c.id', 'm.category_id')
+      .select('m.id', 'm.category_id', 'm.name', 'm.price_xof', 'm.available',
+        'm.options_json', 'm.option_groups_json', { station: 'c.station' },
+        { category_active: 'c.active' })
+      .where('m.id', menuItemId)
+      .where('m.restaurant_id', restaurantId)
+      .first();
+  }
+
+  async insertPublicOrderTransaction(
+    trx: Knex.Transaction,
+    params: {
+      orderId: string; restaurantId: string; orderNumber: string;
+      orderType: 'QR_TABLE' | 'CLICK_COLLECT' | 'DELIVERY'; tableId: string | null;
+      customerName: string; customerPhone: string; deliveryAddress: string;
+      deliveryZone: string; deliveryFeeXof: number; scheduledSlot: string;
+      promoCode: string; loyaltyPointsUsed: number; subtotalHtXof: number;
+      discountXof: number; taxXof: number; totalXof: number; notes: string;
+      idempotencyKey: string | null; now: string;
+      lines: Array<{
+        id: string; menuItemId: string; name: string; station: string;
+        unitPriceXof: number; optionsSummary: string; optionsDeltaXof: number;
+        quantity: number; lineTotalXof: number; notes: string;
+      }>;
+    },
+  ): Promise<void> {
+    await trx('orders').insert({
+      id: params.orderId, restaurant_id: params.restaurantId,
+      order_number: params.orderNumber, order_type: params.orderType,
+      table_id: params.tableId, customer_name: params.customerName,
+      customer_phone: params.customerPhone, delivery_address: params.deliveryAddress,
+      delivery_zone: params.deliveryZone, delivery_fee_xof: params.deliveryFeeXof,
+      scheduled_slot: params.scheduledSlot, promo_code: params.promoCode,
+      loyalty_points_used: params.loyaltyPointsUsed, loyalty_points_earned: 0,
+      status: 'PENDING', subtotal_xof: params.subtotalHtXof,
+      discount_xof: params.discountXof, tax_xof: params.taxXof,
+      total_xof: params.totalXof, paid_xof: 0, notes: params.notes,
+      idempotency_key: params.idempotencyKey, created_by_user_id: null,
+      created_at: params.now, updated_at: params.now,
+    });
+    await trx('order_items').insert(params.lines.map((line) => ({
+      id: line.id, order_id: params.orderId, menu_item_id: line.menuItemId,
+      name: line.name, station: line.station, unit_price_xof: line.unitPriceXof,
+      options_summary: line.optionsSummary, options_delta_xof: line.optionsDeltaXof,
+      quantity: line.quantity, line_total_xof: line.lineTotalXof,
+      notes: line.notes, prep_status: 'PENDING',
+    })));
+    if (params.tableId) {
+      await trx('dining_tables')
+        .where({ id: params.tableId, restaurant_id: params.restaurantId })
+        .update({ status: 'OCCUPIED' });
+    }
+  }
+
+  async findTrackedQrOrder(token: string, orderId: string) {
+    const order = await this.db('orders as o')
+      .join('qr_codes as q', function () {
+        this.on('q.table_id', '=', 'o.table_id').andOn('q.restaurant_id', '=', 'o.restaurant_id');
+      })
+      .join('dining_tables as t', 't.id', 'o.table_id')
+      .join('restaurants as r', 'r.id', 'o.restaurant_id')
+      .select({
+        id: 'o.id', restaurant_id: 'o.restaurant_id', order_number: 'o.order_number', order_type: 'o.order_type',
+        status: 'o.status', discount_xof: 'o.discount_xof', total_xof: 'o.total_xof',
+        paid_xof: 'o.paid_xof', notes: 'o.notes', customer_name: 'o.customer_name',
+        customer_phone: 'o.customer_phone', promo_code: 'o.promo_code',
+        loyalty_points_used: 'o.loyalty_points_used', loyalty_points_earned: 'o.loyalty_points_earned',
+        created_at: 'o.created_at', updated_at: 'o.updated_at', table_label: 't.label',
+        restaurant_name: 'r.name', loyalty_enabled: 'r.loyalty_enabled',
+      })
+      .where('q.token', token)
+      .where('o.id', orderId)
+      .first();
+    if (!order) return null;
+    const items = await this.db('order_items')
+      .select('id', 'name', 'station', 'quantity', 'options_summary', 'line_total_xof', 'notes', 'prep_status')
+      .where({ order_id: orderId });
+    const review = await this.findReviewByOrderId(orderId);
+    return { order, items, review };
+  }
+
+  async findTrackedStorefrontOrder(slug: string, orderId: string) {
+    const order = await this.db('orders as o')
+      .join('restaurants as r', 'r.id', 'o.restaurant_id')
+      .select({
+        id: 'o.id', restaurant_id: 'o.restaurant_id', order_number: 'o.order_number', order_type: 'o.order_type',
+        status: 'o.status', discount_xof: 'o.discount_xof', total_xof: 'o.total_xof',
+        paid_xof: 'o.paid_xof', notes: 'o.notes', customer_name: 'o.customer_name',
+        customer_phone: 'o.customer_phone', delivery_address: 'o.delivery_address',
+        delivery_zone: 'o.delivery_zone', delivery_fee_xof: 'o.delivery_fee_xof',
+        scheduled_slot: 'o.scheduled_slot', promo_code: 'o.promo_code',
+        loyalty_points_used: 'o.loyalty_points_used', loyalty_points_earned: 'o.loyalty_points_earned',
+        created_at: 'o.created_at', updated_at: 'o.updated_at', restaurant_name: 'r.name',
+        restaurant_slug: 'r.slug', restaurant_phone: 'r.phone', restaurant_address: 'r.address',
+        restaurant_city: 'r.city', loyalty_enabled: 'r.loyalty_enabled',
+      })
+      .where('r.slug', slug)
+      .where('o.id', orderId)
+      .whereIn('o.order_type', ['CLICK_COLLECT', 'DELIVERY'])
+      .first();
+    if (!order) return null;
+    const items = await this.db('order_items')
+      .select('id', 'name', 'station', 'quantity', 'options_summary', 'line_total_xof', 'notes', 'prep_status')
+      .where({ order_id: orderId });
+    const review = await this.findReviewByOrderId(orderId);
+    return { order, items, review };
+  }
+
+  async findReviewByOrderId(orderId: string) {
+    const r = await this.db('customer_reviews')
+      .select({
+        id: 'id', restaurantId: 'restaurant_id', orderId: 'order_id',
+        orderNumber: 'order_number', tableLabel: 'table_label',
+        customerName: 'customer_name', rating: 'rating',
+        serviceRating: this.db.raw('COALESCE(service_rating, rating)'),
+        foodRating: this.db.raw('COALESCE(food_rating, rating)'),
+        speedRating: this.db.raw('COALESCE(speed_rating, rating)'),
+        waiterName: this.db.raw("COALESCE(waiter_name, '')"),
+        channel: this.db.raw("COALESCE(channel, 'QR_ORDER')"),
+        comment: 'comment', reply: 'reply', createdAt: 'created_at',
+      })
+      .where({ order_id: orderId })
+      .first();
+    if (!r) return null;
+    const rating = Number(r.rating);
+    return {
+      id: String(r.id), restaurantId: String(r.restaurantId),
+      orderId: r.orderId ? String(r.orderId) : null,
+      orderNumber: String(r.orderNumber || ''), tableLabel: String(r.tableLabel || ''),
+      customerName: String(r.customerName || 'Client'), rating,
+      serviceRating: Number(r.serviceRating || rating),
+      foodRating: Number(r.foodRating || rating),
+      speedRating: Number(r.speedRating || rating),
+      waiterName: String(r.waiterName || ''), channel: String(r.channel || 'QR_ORDER'),
+      comment: String(r.comment || ''), reply: String(r.reply || ''),
+      createdAt: String(r.createdAt),
+    };
+  }
+
+  async findPublicRatingStats(restaurantId: string) {
+    const row = await this.db('customer_reviews')
+      .where({ restaurant_id: restaurantId })
+      .select(
+        this.db.raw('COUNT(*)::int as total'),
+        this.db.raw('ROUND(AVG(rating)::numeric, 1) as "avgRating"'),
+        this.db.raw('ROUND(AVG(COALESCE(service_rating, rating))::numeric, 1) as "avgServiceRating"'),
+      )
+      .first();
+    return {
+      total: Number(row?.total || 0),
+      avgRating: Number(row?.avgRating || 0),
+      avgServiceRating: Number(row?.avgServiceRating || 0),
+    };
+  }
+
+  async resolveLoyaltyForPhone(
+    restaurantId: string,
+    cleanPhone: string,
+    executor: Knex | Knex.Transaction = this.db,
+  ) {
+    if (cleanPhone.length < 6) return null;
+    const digitsTail = cleanPhone.replace(/\\D/g, '').slice(-8);
+    const resto = await executor('restaurants')
+      .select('loyalty_enabled', 'loyalty_points_per_1000_xof', 'loyalty_xof_per_point')
+      .where({ id: restaurantId })
+      .first();
+    const customer = await executor('customers')
+      .select('id', 'full_name', 'phone', 'loyalty_points', 'total_spent_xof', 'visits_count')
+      .where('restaurant_id', restaurantId)
+      .andWhere(function () {
+        this.where('phone', cleanPhone)
+          .orWhereRaw("REPLACE(REPLACE(phone, ' ', ''), '+', '') LIKE ?", [`%${digitsTail}`]);
+      })
+      .first();
+    return {
+      loyaltyEnabled: Boolean(resto?.loyalty_enabled ?? 1),
+      pointsPer1000Xof: Number(resto?.loyalty_points_per_1000_xof || 10),
+      xofPerPoint: Number(resto?.loyalty_xof_per_point || 25),
+      customer: customer ? {
+        id: customer.id,
+        fullName: customer.full_name,
+        phone: customer.phone,
+        loyaltyPoints: Number(customer.loyalty_points || 0),
+        totalSpentXof: Number(customer.total_spent_xof || 0),
+        visitsCount: Number(customer.visits_count || 0),
+      } : null,
+    };
+  }
+
+  async createTableCall(params: {
+    restaurantId: string;
+    tableId: string;
+    tableLabel: string;
+    callType: 'WAITER' | 'BILL';
+    note: string;
+  }) {
+    const id = this.id('call');
+    const notificationId = this.id('ntf');
+    const now = new Date().toISOString();
+    await this.db.transaction(async (trx) => {
+      await trx('table_calls').insert({
+        id, restaurant_id: params.restaurantId, table_id: params.tableId,
+        table_label: params.tableLabel, call_type: params.callType,
+        note: params.note, status: 'PENDING', created_at: now,
+      });
+      await trx('notifications').insert({
+        id: notificationId, restaurant_id: params.restaurantId,
+        type: params.callType === 'BILL' ? 'TABLE_BILL_REQUEST' : 'TABLE_WAITER_CALL',
+        title: params.callType === 'BILL'
+          ? `Demande d’addition · ${params.tableLabel}`
+          : `Appel serveur · ${params.tableLabel}`,
+        message: params.note || `La table ${params.tableLabel} demande votre présence.`,
+        stock_id: null, email_dispatched: 0, email_recipients: '',
+        email_status: 'SKIPPED', is_read: 0, created_at: now,
+      });
+    });
+    return {
+      id, restaurantId: params.restaurantId, tableId: params.tableId,
+      tableLabel: params.tableLabel, callType: params.callType,
+      note: params.note, status: 'PENDING' as const, createdAt: now,
+    };
+  }
+
+  async insertCustomerReview(params: {
+    restaurantId: string;
+    orderId: string | null;
+    orderNumber: string;
+    tableLabel: string;
+    customerName: string;
+    rating: number;
+    serviceRating: number;
+    foodRating: number;
+    speedRating: number;
+    waiterName: string;
+    channel: string;
+    comment: string;
+  }) {
+    const id = this.id('rev');
+    const now = new Date().toISOString();
+    await this.db('customer_reviews').insert({
+      id, restaurant_id: params.restaurantId, order_id: params.orderId,
+      order_number: params.orderNumber, table_label: params.tableLabel,
+      customer_name: params.customerName, rating: params.rating,
+      service_rating: params.serviceRating, food_rating: params.foodRating,
+      speed_rating: params.speedRating, waiter_name: params.waiterName,
+      channel: params.channel, comment: params.comment, reply: '',
+      created_at: now,
+    });
+    return {
+      id, restaurantId: params.restaurantId, orderId: params.orderId,
+      orderNumber: params.orderNumber, tableLabel: params.tableLabel,
+      customerName: params.customerName, rating: params.rating,
+      serviceRating: params.serviceRating, foodRating: params.foodRating,
+      speedRating: params.speedRating, waiterName: params.waiterName,
+      channel: params.channel, comment: params.comment, reply: '',
+      createdAt: now,
+    };
+  }
+
+  async findServiceWaiterNames(restaurantId: string): Promise<string[]> {
+    const rows = await this.db('restaurant_members as rm')
+      .join('users as u', 'u.id', 'rm.user_id')
+      .select('u.full_name')
+      .where('rm.restaurant_id', restaurantId)
+      .where('rm.status', 'ACTIVE')
+      .where('u.status', 'ACTIVE')
+      .whereIn('rm.role', ['WAITER', 'CASHIER', 'MANAGER'])
+      .orderBy('u.full_name', 'asc')
+      .limit(20);
+    return rows.map((r) => String(r.full_name || '').trim()).filter(Boolean);
+  }
+}
+
+export const knexPublicRepository = new KnexPublicRepository();
+ THEN substring(order_number from 5)::integer
+           ELSE 1000
+         END),
+         1000
+       ) AS max_number
+       FROM orders
+       WHERE restaurant_id = ?`,
+      [restaurantId],
+    );
+    const initial = Math.max(1000, Number(maxResult.rows?.[0]?.max_number || 1000));
+    const now = new Date().toISOString();
+    const inserted = await trx('restaurant_order_counters')
+      .insert({ restaurant_id: restaurantId, last_number: initial + 1, updated_at: now })
+      .onConflict('restaurant_id')
+      .merge({
+        last_number: trx.raw('GREATEST(restaurant_order_counters.last_number, ?) + 1', [initial]),
+        updated_at: now,
+      })
+      .returning('last_number');
+    const next = Number(inserted[0]?.last_number);
+    if (!Number.isSafeInteger(next) || next <= 1000) {
+      throw new Error('Impossible de réserver un numéro de commande unique.');
+    }
+    return `CMD-${next}`;
+  }
+
   async countOrdersForRestaurant(restaurantId: string): Promise<number> {
     const row = await this.db('orders').where({ restaurant_id: restaurantId }).count({ c: '*' }).first();
     return Number(row?.c || 0);
