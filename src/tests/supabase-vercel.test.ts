@@ -214,6 +214,15 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(fs.existsSync(denyInternalMigrationPath), true);
   const denyInternalMigrationSql = fs.readFileSync(denyInternalMigrationPath, 'utf8');
   assert.equal(denyInternalMigrationSql.includes('USING (FALSE) WITH CHECK (FALSE)'), true);
+  const operationalIndexesPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260015_index_operational_foreign_keys.sql',
+  );
+  assert.equal(fs.existsSync(operationalIndexesPath), true);
+  const operationalIndexesSql = fs.readFileSync(operationalIndexesPath, 'utf8');
+  assert.equal(operationalIndexesSql.includes('idx_cash_register_opened_by'), true);
+  assert.equal(operationalIndexesSql.includes('idx_loyalty_transactions_order_fk'), true);
+  assert.equal(operationalIndexesSql.includes('idx_table_calls_table_fk'), true);
   assert.equal(schemaSql.includes('deny_api_access_%I'), true);
   assert.equal(schemaSql.includes("'users'"), true);
   assert.equal(schemaSql.includes("'sessions'"), true);

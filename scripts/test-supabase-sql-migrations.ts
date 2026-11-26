@@ -19,6 +19,7 @@ const migrationFiles = [
   '202611260012_pin_tenant_function_search_path.sql',
   '202611260013_apply_existing_tenant_rls.sql',
   '202611260014_deny_api_access_to_internal_tables.sql',
+  '202611260015_index_operational_foreign_keys.sql',
 ];
 
 async function main(): Promise<void> {
