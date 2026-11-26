@@ -323,28 +323,28 @@ export class PublicService extends BaseService<PublicRepository> {
     };
   }
 
-  lookupPublicLoyaltyByQr(token: string, phone: string) {
-    const qrRow = publicRepository.findQrContextByToken(token);
+  async lookupPublicLoyaltyByQr(token: string, phone: string) {
+    const qrRow = await publicReadRepository.findQrContextByToken(token);
     if (!qrRow || qrRow.qr_status !== 'ACTIVE') {
       throw new AppError(404, 'QR code introuvable ou révoqué.');
     }
-    const info = resolveLoyaltyForPhone(
-      getDb(),
-      String(qrRow.restaurant_id),
-      phone,
-    );
+    const info = isLegacyPublicTestRuntime()
+      ? resolveLoyaltyForPhone(getDb(), String(qrRow.restaurant_id), phone)
+      : await knexPublicRepository.resolveLoyaltyForPhone(String(qrRow.restaurant_id), normalizePhoneKey(phone));
     if (!info) {
       throw new AppError(400, 'Numéro de téléphone invalide.');
     }
     return info;
   }
 
-  lookupPublicLoyaltyBySlug(slug: string, phone: string) {
-    const resto = publicRepository.findStorefrontBySlug(slug);
+  async lookupPublicLoyaltyBySlug(slug: string, phone: string) {
+    const resto = await publicReadRepository.findStorefrontBySlug(slug);
     if (!resto) {
       throw new AppError(404, 'Restaurant introuvable.');
     }
-    const info = resolveLoyaltyForPhone(getDb(), String(resto.id), phone);
+    const info = isLegacyPublicTestRuntime()
+      ? resolveLoyaltyForPhone(getDb(), String(resto.id), phone)
+      : await knexPublicRepository.resolveLoyaltyForPhone(String(resto.id), normalizePhoneKey(phone));
     if (!info) {
       throw new AppError(400, 'Numéro de téléphone invalide.');
     }

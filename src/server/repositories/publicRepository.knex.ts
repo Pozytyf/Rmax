@@ -231,6 +231,36 @@ export class KnexPublicRepository {
     };
   }
 
+  async resolveLoyaltyForPhone(restaurantId: string, cleanPhone: string) {
+    if (cleanPhone.length < 6) return null;
+    const digitsTail = cleanPhone.replace(/\\D/g, '').slice(-8);
+    const resto = await this.db('restaurants')
+      .select('loyalty_enabled', 'loyalty_points_per_1000_xof', 'loyalty_xof_per_point')
+      .where({ id: restaurantId })
+      .first();
+    const customer = await this.db('customers')
+      .select('id', 'full_name', 'phone', 'loyalty_points', 'total_spent_xof', 'visits_count')
+      .where('restaurant_id', restaurantId)
+      .andWhere(function () {
+        this.where('phone', cleanPhone)
+          .orWhereRaw("REPLACE(REPLACE(phone, ' ', ''), '+', '') LIKE ?", [`%${digitsTail}`]);
+      })
+      .first();
+    return {
+      loyaltyEnabled: Boolean(resto?.loyalty_enabled ?? 1),
+      pointsPer1000Xof: Number(resto?.loyalty_points_per_1000_xof || 10),
+      xofPerPoint: Number(resto?.loyalty_xof_per_point || 25),
+      customer: customer ? {
+        id: customer.id,
+        fullName: customer.full_name,
+        phone: customer.phone,
+        loyaltyPoints: Number(customer.loyalty_points || 0),
+        totalSpentXof: Number(customer.total_spent_xof || 0),
+        visitsCount: Number(customer.visits_count || 0),
+      } : null,
+    };
+  }
+
   async findServiceWaiterNames(restaurantId: string): Promise<string[]> {
     const rows = await this.db('restaurant_members as rm')
       .join('users as u', 'u.id', 'rm.user_id')
