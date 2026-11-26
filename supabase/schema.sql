@@ -923,6 +923,32 @@ REVOKE ALL ON TABLE public.schema_migrations FROM anon, authenticated;
 REVOKE ALL ON TABLE public.knex_migrations FROM anon, authenticated;
 REVOKE ALL ON TABLE public.knex_migrations_lock FROM anon, authenticated;
 
+-- Explicit deny policies for sensitive/internal tables. These tables are only
+-- accessed by the trusted server-side database connection, never by Data API roles.
+DO $
+DECLARE
+  tbl TEXT;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY[
+    'users',
+    'sessions',
+    'auth_tokens',
+    'schema_migrations',
+    'knex_migrations',
+    'knex_migrations_lock'
+  ]
+  LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', tbl);
+    EXECUTE format('DROP POLICY IF EXISTS deny_api_access_%I ON public.%I', tbl, tbl);
+    EXECUTE format(
+      'CREATE POLICY deny_api_access_%I ON public.%I FOR ALL USING (FALSE) WITH CHECK (FALSE)',
+      tbl, tbl
+    );
+    EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon, authenticated', tbl);
+  END LOOP;
+END
+$;
+
 -- Keep the internal RLS DDL event-trigger function off the public RPC surface.
 DO $
 BEGIN
