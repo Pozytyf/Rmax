@@ -687,6 +687,84 @@ export class KnexRestaurantStockRepository {
     }
   }
 
+  async findPayments(rid: string) {
+    const rows = await this.db('payments as p')
+      .join('orders as o', function () {
+        this.on('o.id', '=', 'p.order_id').andOn('o.restaurant_id', '=', 'p.restaurant_id');
+      })
+      .select({
+        id: 'p.id', restaurantId: 'p.restaurant_id', orderId: 'p.order_id',
+        orderNumber: 'o.order_number', amountXof: 'p.amount_xof',
+        method: 'p.method', status: 'p.status', mode: 'p.mode',
+        reference: 'p.reference', createdAt: 'p.created_at',
+      })
+      .where('p.restaurant_id', rid)
+      .orderBy('p.created_at', 'desc')
+      .limit(100);
+    return rows.map((row) => ({ ...row, amountXof: Number(row.amountXof || 0) }));
+  }
+
+  async findPaymentByIdempotencyKey(rid: string, key: string, executor: Knex | Knex.Transaction = this.db) {
+    return executor('payments')
+      .select('id', 'reference', 'amount_xof')
+      .where({ restaurant_id: rid, idempotency_key: key }).first();
+  }
+
+  async insertPaymentAndSettleOrder(
+    trx: Knex.Transaction,
+    params: {
+      paymentId: string; rid: string; orderId: string; amountXof: number;
+      method: string; mode: string; reference: string;
+      idempotencyKey: string | null; userId: string;
+      newPaid: number; fullyPaid: boolean; tableId: string | null; now: string;
+    },
+  ): Promise<void> {
+    await trx('payments').insert({
+      id: params.paymentId, restaurant_id: params.rid, order_id: params.orderId,
+      amount_xof: params.amountXof, method: params.method, status: 'PAID',
+      mode: params.mode, reference: params.reference,
+      idempotency_key: params.idempotencyKey,
+      created_by_user_id: params.userId, created_at: params.now,
+    });
+    const updated = await trx('orders')
+      .where({ id: params.orderId, restaurant_id: params.rid })
+      .update({
+        paid_xof: params.newPaid,
+        ...(params.fullyPaid ? { status: 'PAID' } : {}),
+        updated_at: params.now,
+      });
+    if (updated !== 1) throw new AppError(404, 'Commande introuvable pendant l’encaissement.');
+    if (params.fullyPaid && params.tableId) {
+      await trx('dining_tables')
+        .where({ id: params.tableId, restaurant_id: params.rid })
+        .update({ status: 'AVAILABLE' });
+    }
+  }
+
+  async findPaymentForRefund(paymentId: string, rid: string, trx: Knex.Transaction) {
+    return trx('payments')
+      .select('id', 'order_id', 'amount_xof', 'status')
+      .where({ id: paymentId, restaurant_id: rid })
+      .forUpdate().first();
+  }
+
+  async markPaymentRefunded(
+    trx: Knex.Transaction,
+    paymentId: string, rid: string, orderId: string, amountXof: number,
+  ): Promise<void> {
+    const updated = await trx('payments')
+      .where({ id: paymentId, restaurant_id: rid })
+      .whereNot('status', 'REFUNDED')
+      .update({ status: 'REFUNDED' });
+    if (updated !== 1) throw new AppError(409, 'Ce paiement a déjà été remboursé.');
+    await trx('orders')
+      .where({ id: orderId, restaurant_id: rid })
+      .update({
+        paid_xof: trx.raw('GREATEST(0, paid_xof - ?)', [amountXof]),
+        status: 'SERVED', updated_at: new Date().toISOString(),
+      });
+  }
+
   async findOrdersWithItems(rid: string) {
     const orders = await this.db('orders as o')
       .leftJoin('dining_tables as t', function () {
