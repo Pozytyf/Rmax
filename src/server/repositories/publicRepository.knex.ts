@@ -134,6 +134,162 @@ export class KnexPublicRepository {
       .first();
   }
 
+  async findOrderForQrPayment(token: string, orderId: string) {
+    return this.db('orders as o')
+      .join('qr_codes as q', function () {
+        this.on('q.table_id', '=', 'o.table_id').andOn('q.restaurant_id', '=', 'o.restaurant_id');
+      })
+      .join('restaurants as r', 'r.id', 'o.restaurant_id')
+      .select({
+        id: 'o.id', restaurant_id: 'o.restaurant_id', table_id: 'o.table_id',
+        order_number: 'o.order_number', status: 'o.status',
+        total_xof: 'o.total_xof', paid_xof: 'o.paid_xof',
+        customer_phone: 'o.customer_phone', paydunya_mode: 'r.paydunya_mode',
+        restaurant_name: 'r.name', restaurant_status: 'r.status',
+        deleted_at: 'r.deleted_at', qr_status: 'q.status',
+      })
+      .where('q.token', token)
+      .where('o.id', orderId)
+      .first();
+  }
+
+  async findOrderForStorefrontPayment(slug: string, orderId: string) {
+    return this.db('orders as o')
+      .join('restaurants as r', 'r.id', 'o.restaurant_id')
+      .select({
+        id: 'o.id', restaurant_id: 'o.restaurant_id',
+        order_number: 'o.order_number', status: 'o.status',
+        order_type: 'o.order_type', total_xof: 'o.total_xof',
+        paid_xof: 'o.paid_xof', customer_phone: 'o.customer_phone',
+        paydunya_mode: 'r.paydunya_mode', restaurant_name: 'r.name',
+        restaurant_status: 'r.status', deleted_at: 'r.deleted_at',
+      })
+      .where('r.slug', slug)
+      .where('o.id', orderId)
+      .whereIn('o.order_type', ['CLICK_COLLECT', 'DELIVERY'])
+      .first();
+  }
+
+  async findQrPaymentByIdempotencyKey(restaurantId: string, idempotencyKey: string) {
+    return this.db('payments')
+      .select({
+        id: 'id', orderId: 'order_id', amountXof: 'amount_xof',
+        method: 'method', mode: 'mode', reference: 'reference',
+        status: 'status', createdAt: 'created_at',
+        provider: 'provider', providerReference: 'provider_reference',
+        checkoutUrl: 'checkout_url',
+      })
+      .where({ restaurant_id: restaurantId, idempotency_key: idempotencyKey })
+      .first();
+  }
+
+  async insertPendingPublicOrderPayment(params: {
+    paymentId: string; restaurantId: string; orderId: string;
+    amountXof: number; method: string; mode: string; reference: string;
+    idempotencyKey: string | null; now: string;
+  }) {
+    await this.db('payments').insert({
+      id: params.paymentId, restaurant_id: params.restaurantId,
+      order_id: params.orderId, amount_xof: params.amountXof,
+      method: params.method, status: 'PENDING', mode: params.mode,
+      reference: params.reference, idempotency_key: params.idempotencyKey,
+      provider: 'PAYDUNYA', provider_status: 'INITIALIZING',
+      created_by_user_id: null, created_at: params.now, updated_at: params.now,
+    });
+  }
+
+  async updatePaymentProviderDetails(params: {
+    paymentId: string; restaurantId: string; providerReference: string;
+    checkoutUrl: string | null; providerStatus: string; payloadJson: string; now: string;
+  }) {
+    const updated = await this.db('payments')
+      .where({
+        id: params.paymentId, restaurant_id: params.restaurantId,
+        provider: 'PAYDUNYA', status: 'PENDING',
+      })
+      .update({
+        provider_reference: params.providerReference,
+        checkout_url: params.checkoutUrl,
+        provider_status: params.providerStatus,
+        provider_payload_json: params.payloadJson,
+        updated_at: params.now,
+      });
+    if (updated !== 1) throw new Error('Le paiement en attente est introuvable pour enregistrer la référence PayDunya.');
+  }
+
+  async markPendingPaymentFailed(params: {
+    paymentId: string; restaurantId: string; reason: string; now: string;
+  }) {
+    await this.db('payments')
+      .where({
+        id: params.paymentId, restaurant_id: params.restaurantId,
+        status: 'PENDING',
+      })
+      .update({
+        status: 'FAILED', provider_status: 'FAILED',
+        provider_payload_json: params.reason, updated_at: params.now,
+      });
+  }
+
+  async findPaymentByProviderReference(providerReference: string) {
+    return this.db('payments')
+      .select('id', 'restaurant_id', 'order_id', 'amount_xof', 'method',
+        'status', 'provider', 'provider_reference', 'idempotency_key')
+      .where({ provider: 'PAYDUNYA', provider_reference: providerReference })
+      .first();
+  }
+
+  async completePaydunyaOrderPayment(
+    trx: Knex.Transaction,
+    params: {
+      paymentId: string; restaurantId: string; orderId: string;
+      providerReference: string; amountXof: number; payloadJson: string; now: string;
+    },
+  ) {
+    const payment = await trx('payments')
+      .where({
+        id: params.paymentId, restaurant_id: params.restaurantId,
+        order_id: params.orderId, provider: 'PAYDUNYA',
+      })
+      .forUpdate()
+      .first();
+    if (!payment) throw new Error('Paiement PayDunya introuvable.');
+    if (payment.status === 'PAID') return { alreadyPaid: true, fullyPaid: false, order: null };
+    if (payment.status !== 'PENDING') throw new Error('Ce paiement n’est plus en attente.');
+    if (String(payment.provider_reference) !== params.providerReference) {
+      throw new Error('La référence PayDunya ne correspond pas au paiement enregistré.');
+    }
+    if (Number(payment.amount_xof) !== params.amountXof) {
+      throw new Error('Le montant confirmé par PayDunya ne correspond pas au paiement.');
+    }
+
+    const order = await trx('orders')
+      .where({ id: params.orderId, restaurant_id: params.restaurantId })
+      .forUpdate()
+      .first();
+    if (!order) throw new Error('Commande associée au paiement introuvable.');
+    const remaining = Number(order.total_xof) - Number(order.paid_xof);
+    if (params.amountXof <= 0 || params.amountXof > remaining) {
+      throw new Error('Le montant du paiement dépasse le solde de la commande.');
+    }
+    const newPaid = Number(order.paid_xof) + params.amountXof;
+    const fullyPaid = newPaid >= Number(order.total_xof);
+    await trx('payments')
+      .where({ id: params.paymentId, restaurant_id: params.restaurantId })
+      .update({
+        status: 'PAID', provider_status: 'COMPLETED',
+        provider_payload_json: params.payloadJson, updated_at: params.now,
+      });
+    await trx('orders')
+      .where({ id: params.orderId, restaurant_id: params.restaurantId })
+      .update({
+        paid_xof: newPaid,
+        status: fullyPaid ? 'PAID' : order.status,
+        updated_at: params.now,
+      });
+    return { alreadyPaid: false, fullyPaid, order: { ...order, paid_xof: newPaid } };
+  }
+
   async insertPublicOrderTransaction(
     trx: Knex.Transaction,
     params: {
