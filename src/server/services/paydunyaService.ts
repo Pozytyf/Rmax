@@ -188,6 +188,101 @@ export async function createPaydunyaSubscriptionCheckout(
   }
 }
 
+export interface PaydunyaOrderCheckoutInput {
+  paymentId: string;
+  orderId: string;
+  orderNumber: string;
+  restaurantId: string;
+  restaurantName: string;
+  amountXof: number;
+  paymentMethod: string;
+  baseUrl: string;
+  returnUrl: string;
+  cancelUrl: string;
+}
+
+export async function createPaydunyaOrderCheckout(
+  input: PaydunyaOrderCheckoutInput,
+): Promise<PaydunyaInvoiceInitResult> {
+  const creds = resolvePaydunyaPlatformCredentials();
+  if (!creds.configured) {
+    if (process.env.NODE_ENV === 'production' || process.env.PAYMENT_MODE === 'LIVE') {
+      throw new Error('Configuration PayDunya absente : les paiements réels sont désactivés.');
+    }
+    return {
+      providerMode: 'SANDBOX_SIMULATION',
+      mode: 'TEST',
+      paydunyaToken: `pdx_sim_${crypto.randomBytes(10).toString('hex')}`,
+      checkoutUrl: null,
+      simulated: true,
+    };
+  }
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    throw new Error('PAYDUNYA_MODE=LIVE est obligatoire pour accepter un paiement en production.');
+  }
+  const base = new URL(input.baseUrl);
+  if (base.protocol !== 'https:') {
+    throw new Error('APP_URL doit être une URL HTTPS pour le paiement PayDunya.');
+  }
+  const cleanBase = base.toString().replace(/\\/+$/, '');
+  const endpoint = `${getPaydunyaApiBase(creds.mode)}/checkout-invoice/create`;
+  const payload = {
+    invoice: {
+      total_amount: Math.round(input.amountXof),
+      description: `Commande ${input.orderNumber} · ${input.restaurantName} · Resto'MAX`,
+    },
+    store: {
+      name: input.restaurantName,
+      tagline: 'Commande en ligne',
+      website_url: cleanBase,
+    },
+    custom_data: {
+      payment_type: 'ORDER',
+      payment_id: input.paymentId,
+      order_id: input.orderId,
+      order_number: input.orderNumber,
+      restaurant_id: input.restaurantId,
+      payment_method: input.paymentMethod,
+      amount_xof: String(Math.round(input.amountXof)),
+      currency: 'XOF',
+    },
+    actions: {
+      callback_url: `${cleanBase}/api/public/webhooks/paydunya`,
+      return_url: input.returnUrl,
+      cancel_url: input.cancelUrl,
+    },
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: buildHeaders(creds),
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      response_code?: string; response_text?: string; token?: string; description?: string;
+    };
+    const checkoutUrl = String(data.response_text || '');
+    if (
+      !response.ok || data.response_code !== '00' ||
+      !data.token || !checkoutUrl.startsWith('https://')
+    ) {
+      throw new Error(data.description || data.response_text || 'PayDunya a refusé la création du paiement.');
+    }
+    return {
+      providerMode: 'PAYDUNYA_API',
+      mode: creds.mode,
+      paydunyaToken: String(data.token),
+      checkoutUrl,
+      simulated: false,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function confirmPaydunyaInvoice(
   paydunyaToken: string,
 ): Promise<PaydunyaConfirmResult> {
