@@ -94,6 +94,7 @@ test('PostgreSQL authentication repository persists tenant, user, session and on
   const email = `it-${suffix}@example.invalid`;
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const tableIds: string[] = [];
 
   try {
     const plan = await knexAuthRepository.findPlanForRegistration('ESSENTIEL');
@@ -453,18 +454,21 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
         capacity: 2, shape: 'ROUND',
       }),
     );
+    tableIds.push(transferSource.tableId);
     const transferTarget = await db.transaction((trx) =>
       knexRestaurantStockRepository.createTableWithQr(trx, {
         rid: restaurantId, zone: 'Test', label: 'Transfert cible',
         capacity: 2, shape: 'RECT',
       }),
     );
+    tableIds.push(transferTarget.tableId);
     const mergeSource = await db.transaction((trx) =>
       knexRestaurantStockRepository.createTableWithQr(trx, {
         rid: restaurantId, zone: 'Test', label: 'Fusion source',
         capacity: 2, shape: 'ROUND',
       }),
     );
+    tableIds.push(mergeSource.tableId);
     await db.transaction((trx) => knexRestaurantStockRepository.insertPosOrder(trx, {
       orderId: `it_transfer_order_${suffix}`, rid: restaurantId,
       orderNumber: `IT-TRANSFER-${suffix.slice(0, 5)}`,
@@ -796,17 +800,19 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     await db('purchase_orders').where({ restaurant_id: restaurantId }).del();
     await db('notifications').where({ restaurant_id: restaurantId }).del();
     await db('stock_alert_settings').where({ restaurant_id: restaurantId }).del();
-    await db('orders').where({ restaurant_id: restaurantId }).whereIn('id', [`it_transfer_order_${suffix}`, `it_merge_order_${suffix}`]).del();
-    await db('dining_tables').where({ restaurant_id: restaurantId }).whereIn('id', [`it_transfer_order_${suffix}`, `it_merge_order_${suffix}`]).del();
-    await db('qr_codes').where({ restaurant_id: restaurantId }).whereIn('table_id', [`it_transfer_order_${suffix}`, `it_merge_order_${suffix}`]).del();
     await db('payments').where({ restaurant_id: restaurantId }).del();
     await db('order_items').whereIn('order_id', db('orders').select('id').where({ restaurant_id: restaurantId })).del();
     await db('orders').where({ restaurant_id: restaurantId }).del();
+    if (tableIds.length) {
+      await db('qr_codes').where({ restaurant_id: restaurantId }).whereIn('table_id', tableIds).del();
+      await db('dining_tables').where({ restaurant_id: restaurantId }).whereIn('id', tableIds).del();
+    }
     await db('b2b_invoices').where({ restaurant_id: restaurantId }).del();
     await db('staff_time_clocks').where({ restaurant_id: restaurantId }).del();
     await db('inventory_count_lines').whereIn('inventory_count_id', db('inventory_counts').select('id').where({ restaurant_id: restaurantId })).del();
     await db('inventory_counts').where({ restaurant_id: restaurantId }).del();
     await db('stock_movements').where({ restaurant_id: restaurantId }).del();
+    await db('menu_item_recipes').where({ restaurant_id: restaurantId }).del();
     await db('stocks').where({ restaurant_id: restaurantId }).del();
     await db('cash_register_sessions').where({ restaurant_id: restaurantId }).del();
     if (comboId) await db('menu_combos').where({ id: comboId, restaurant_id: restaurantId }).del();
