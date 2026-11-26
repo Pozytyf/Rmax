@@ -26,10 +26,10 @@ Les nombres ci-dessous sont des occurrences statiques relevées dans les fichier
 - Sessions, utilisateurs, memberships, tokens, audits et transactions passent par Knex/PostgreSQL.
 - L'ancien `authRepository.ts` reste présent pour les fixtures SQLite historiques et les fonctions superadmin qui ne sont pas encore migrées.
 
-### Public / QR / storefront — lecture et consultation uniquement
-- `publicRepository.knex.ts` ajouté pour les plans, paramètres publics, leads, contexte QR, storefront, catégories, articles disponibles, sessions QR, statistiques/avis, noms de serveurs et suivi des commandes QR/storefront.
+### Public / QR / storefront — lectures et petites mutations
+- `publicRepository.knex.ts` ajouté pour les plans, paramètres publics, leads, contexte QR, storefront, catégories, articles disponibles, sessions QR, statistiques/avis, noms de serveurs et suivi des commandes QR/storefront ; ajout aussi des mutations d'appels de table et d'avis clients.
 - `operationsRepository.knex.ts` ajoute la lecture Knex des combos et promotions utilisées pour construire le catalogue public.
-- `publicService` et `publicController` utilisent désormais ces lectures asynchrones en production : plans, paramètres, formulaire contact/démo, catalogue QR/storefront, lookup fidélité et suivi des commandes.
+- `publicService` et `publicController` utilisent désormais ces opérations asynchrones en production : plans, paramètres, formulaire contact/démo, catalogue QR/storefront, lookup fidélité, suivi des commandes, appels serveur/addition et avis clients.
 - Les mutations de commandes publiques, paiements, appels serveur, avis et écritures financières ne sont PAS encore migrées ; elles restent bloquantes pour la mise en production PostgreSQL.
 
 ### Schéma
