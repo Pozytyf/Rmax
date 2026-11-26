@@ -192,25 +192,25 @@ CREATE OR REPLACE FUNCTION public.current_tenant_id()
 RETURNS TEXT
 LANGUAGE sql
 STABLE
-AS $
+AS $function$
   SELECT NULLIF(COALESCE(
     auth.jwt() ->> 'restaurant_id',
     auth.jwt() -> 'app_metadata' ->> 'restaurant_id',
     ''
   ), '');
-$;
+$function$;
 
 CREATE OR REPLACE FUNCTION public.is_superadmin()
 RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
-AS $
+AS $function$
   SELECT COALESCE(
     auth.jwt() ->> 'global_role',
     auth.jwt() -> 'app_metadata' ->> 'global_role',
     ''
   ) = 'SUPER_ADMIN';
-$;
+$function$;
 
 -- Tenant isolation. Do not grant anon access: public QR/storefront requests go
 -- through the authenticated application API. Supabase Realtime requires a
