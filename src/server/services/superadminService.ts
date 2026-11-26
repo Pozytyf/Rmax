@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { getDb, generateId } from '../db.ts';
-import { type AuthContext, recordAudit } from '../auth.ts';
+import { type AuthContext, recordAudit, recordAuditWithKnex } from '../auth.ts';
 import { broadcastRestaurantEvent, broadcastSuperAdminEvent } from '../ws.ts';
 import { authRepository } from '../repositories/authRepository.ts';
 import {
@@ -9,6 +9,8 @@ import {
   superadminRepository,
 } from '../repositories/superadminRepository.ts';
 import { BaseService } from './BaseService.ts';
+import { getKnex } from '../knex.ts';
+import { knexSuperadminSettingsRepository } from '../repositories/superadminRepository.knex.ts';
 import { AppError } from './errors.ts';
 import {
   isEnvSmtpConfigured,
@@ -43,8 +45,14 @@ const PLATFORM_SETTINGS_ALLOWED_KEYS = new Set([
   'platform_announcement',
 ]);
 
-function resolvePlatformSmtpConfig(): SmtpRuntimeConfig | undefined {
-  const rows = superadminRepository.findPlatformSettings();
+function usesPostgresRepositories(): boolean {
+  return ['pg', 'postgres', 'postgresql'].includes((process.env.DATABASE_CLIENT || '').toLowerCase());
+}
+
+async function resolvePlatformSmtpConfig(): Promise<SmtpRuntimeConfig | undefined> {
+  const rows = usesPostgresRepositories()
+    ? await knexSuperadminSettingsRepository.findPlatformSettings()
+    : superadminRepository.findPlatformSettings();
   const map: Record<string, string> = {};
   for (const r of rows) map[r.key] = r.value;
   if (!map.smtp_host?.trim()) return undefined;
@@ -253,7 +261,7 @@ export class SuperadminService extends BaseService<SuperadminRepository> {
     }
 
     const cleanBase = (baseUrl || process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
-    const smtpConfig = resolvePlatformSmtpConfig();
+    const smtpConfig = await resolvePlatformSmtpConfig();
     const emailResult = await sendAuthTransactionalEmail({
       to: cleanEmail,
       fullName: ownerName.trim(),
@@ -1055,8 +1063,10 @@ export class SuperadminService extends BaseService<SuperadminRepository> {
     return superadminRepository.findAuditLogs(filters);
   }
 
-  getPlatformSettings(): Record<string, string> {
-    const rows = superadminRepository.findPlatformSettings();
+  async getPlatformSettings(): Promise<Record<string, string>> {
+    const rows = usesPostgresRepositories()
+      ? await knexSuperadminSettingsRepository.findPlatformSettings()
+      : superadminRepository.findPlatformSettings();
     const secretKeys = new Set([
       'smtp_pass',
       'paydunya_master_key',
@@ -1075,7 +1085,7 @@ export class SuperadminService extends BaseService<SuperadminRepository> {
     return settings;
   }
 
-  updatePlatformSettings(
+  async updatePlatformSettings(
     auth: AuthContext,
     updates: Record<string, unknown>,
   ) {
@@ -1129,8 +1139,7 @@ export class SuperadminService extends BaseService<SuperadminRepository> {
       ]);
     }
 
-    superadminRepository.upsertPlatformSettings(entries);
-    recordAudit(getDb(), {
+    const auditParams = {
       actorUserId: auth.userId,
       actorEmail: auth.email,
       actorRole: 'SUPER_ADMIN',
@@ -1138,7 +1147,16 @@ export class SuperadminService extends BaseService<SuperadminRepository> {
       action: 'PLATFORM_SETTINGS_UPDATED',
       targetType: 'SETTINGS',
       targetId: 'global',
-    });
+    };
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        await knexSuperadminSettingsRepository.upsertPlatformSettings(entries, trx);
+        await recordAuditWithKnex(trx, auditParams);
+      });
+    } else {
+      superadminRepository.upsertPlatformSettings(entries);
+      recordAudit(getDb(), auditParams);
+    }
   }
 
   async testPlatformSmtp(auth: AuthContext, body: Record<string, unknown>) {

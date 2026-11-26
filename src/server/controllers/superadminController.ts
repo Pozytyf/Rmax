@@ -332,7 +332,7 @@ export const superadminController = {
 
   getSettings(_req: Request, res: Response) {
     try {
-      const settings = superadminService.getPlatformSettings();
+      const settings = await superadminService.getPlatformSettings();
       res.json({ settings });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement paramètres.');
@@ -341,7 +341,7 @@ export const superadminController = {
 
   updateSettings(req: Request, res: Response) {
     try {
-      superadminService.updatePlatformSettings(req.auth!, req.body || {});
+      await superadminService.updatePlatformSettings(req.auth!, req.body || {});
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur mise à jour paramètres.');
