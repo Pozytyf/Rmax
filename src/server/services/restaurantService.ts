@@ -43,7 +43,7 @@ import {
 import { operationsRepository } from '../repositories/operationsRepository.ts';
 import { knexRestaurantStockRepository } from '../repositories/restaurantRepository.knex.ts';
 import { knexOperationsReadRepository } from '../repositories/operationsRepository.knex.ts';
-import { applyOrderPromoAndLoyaltyDiscountsKnex, loadActivePromotionsKnex } from './pricingEngine.knex.ts';
+import { applyOrderPromoAndLoyaltyDiscountsKnex, awardLoyaltyPointsOnPaidOrderKnex, loadActivePromotionsKnex } from './pricingEngine.knex.ts';
 import type { Permission, PrinterSettings, Role } from '../../types/index.ts';
 
 const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
@@ -1170,11 +1170,14 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastOrderTrackerEvent(orderId, 'order:updated', { orderId, status });
   }
 
-  getPayments(rid: string) {
-    return restaurantRepository.findPayments(rid);
+  async getPayments(rid: string) {
+    this.ensureTenantId(rid);
+    return usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findPayments(rid)
+      : restaurantRepository.findPayments(rid);
   }
 
-  payOrder(
+  async payOrder(
     auth: AuthContext,
     orderId: string,
     body: Record<string, unknown>,
@@ -1213,6 +1216,78 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     }
 
     const totalPayAmount = parts.reduce((s, p) => s + p.amountXof, 0);
+
+    if (usesPostgresRepositories()) {
+      const result = await getKnex().transaction(async (trx) => {
+        if (idempotencyKey) {
+          const existing = await knexRestaurantStockRepository.findPaymentByIdempotencyKey(
+            rid, String(idempotencyKey), trx,
+          );
+          if (existing) return { deduplicated: true as const, payment: existing };
+        }
+        const order = await knexRestaurantStockRepository.findOrderForUpdate(orderId, rid, trx);
+        if (!order) throw new AppError(404, 'Commande introuvable.');
+        if (order.status === 'CANCELLED') throw new AppError(400, 'Impossible d’encaisser une commande annulée.');
+        const remaining = Number(order.total_xof) - Number(order.paid_xof);
+        if (remaining <= 0) throw new AppError(409, 'Cette commande est déjà intégralement payée.');
+        if (totalPayAmount > remaining) throw new AppError(400, 'Le montant dépasse le solde restant dû.');
+        const resto = await knexRestaurantStockRepository.findRestaurantTaxAndMode(rid, trx);
+        const mode = resto?.paydunya_mode === 'LIVE' ? 'LIVE' : 'TEST';
+        const now = new Date().toISOString();
+        let runningPaid = Number(order.paid_xof);
+        const createdPayments: Array<{
+          id: string; orderId: string; amountXof: number; method: string;
+          mode: string; reference: string; fullyPaid: boolean;
+        }> = [];
+        for (let idx = 0; idx < parts.length; idx++) {
+          const part = parts[idx];
+          runningPaid += part.amountXof;
+          const fullyPaidPart = runningPaid >= Number(order.total_xof);
+          const paymentId = generateId('pay');
+          const reference = `${mode}-${part.method.slice(0, 4)}-${crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
+          const partIdemKey = idempotencyKey
+            ? idx === 0 ? String(idempotencyKey) : `${String(idempotencyKey)}#${idx}`
+            : null;
+          await knexRestaurantStockRepository.insertPaymentAndSettleOrder(trx, {
+            paymentId, rid, orderId, amountXof: part.amountXof,
+            method: part.method, mode, reference,
+            idempotencyKey: partIdemKey, userId: auth.userId,
+            newPaid: runningPaid, fullyPaid: fullyPaidPart,
+            tableId: order.table_id ? String(order.table_id) : null, now,
+          });
+          createdPayments.push({
+            id: paymentId, orderId, amountXof: part.amountXof,
+            method: part.method, mode, reference, fullyPaid: fullyPaidPart,
+          });
+        }
+        const fullyPaid = runningPaid >= Number(order.total_xof);
+        const pointsEarned = fullyPaid
+          ? await awardLoyaltyPointsOnPaidOrderKnex(trx, rid, orderId)
+          : 0;
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: parts.length > 1 ? 'MIXED_PAYMENT_RECORDED' : 'PAYMENT_RECORDED',
+          targetType: 'ORDER', targetId: orderId,
+          details: `${totalPayAmount} FCFA (${parts.map((part) => `${part.method}:${part.amountXof}`).join(' + ')})`,
+        });
+        return { deduplicated: false as const, createdPayments, pointsEarned, fullyPaid, previousStatus: String(order.status) };
+      });
+      if (result.deduplicated) return { payment: result.payment, deduplicated: true };
+      for (const payment of result.createdPayments) {
+        broadcastRestaurantEvent(rid, 'payment:created', {
+          orderId, paymentId: payment.id, amountXof: payment.amountXof,
+          fullyPaid: result.fullyPaid,
+        });
+      }
+      broadcastOrderTrackerEvent(orderId, 'order:updated', {
+        orderId, status: result.fullyPaid ? 'PAID' : result.previousStatus,
+      });
+      return {
+        deduplicated: false, payment: result.createdPayments[0],
+        payments: result.createdPayments, pointsEarned: result.pointsEarned,
+      };
+    }
 
     if (idempotencyKey) {
       const existing = restaurantRepository.findPaymentByIdempotencyKey(
@@ -1264,7 +1339,7 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
         const paymentId = generateId('pay');
         const reference = `${mode}-${part.method.slice(0, 4)}-${Math.floor(100000 + Math.random() * 900000)}`;
         const partIdemKey = idempotencyKey
-          ? parts.length === 1
+          ? idx === 0
             ? String(idempotencyKey)
             : `${String(idempotencyKey)}#${idx}`
           : null;
@@ -1343,8 +1418,26 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     }
   }
 
-  refundPayment(auth: AuthContext, paymentId: string) {
+  async refundPayment(auth: AuthContext, paymentId: string) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const payment = await knexRestaurantStockRepository.findPaymentForRefund(paymentId, rid, trx);
+        if (!payment) throw new AppError(404, 'Paiement introuvable.');
+        if (payment.status === 'REFUNDED') throw new AppError(409, 'Ce paiement a déjà été remboursé.');
+        await knexRestaurantStockRepository.markPaymentRefunded(
+          trx, paymentId, rid, String(payment.order_id), Number(payment.amount_xof),
+        );
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'PAYMENT_REFUNDED', targetType: 'PAYMENT',
+          targetId: paymentId, details: `Remboursement de ${payment.amount_xof} FCFA`,
+        });
+      });
+      broadcastRestaurantEvent(rid, 'payment:refunded', { paymentId });
+      return;
+    }
     const db = getDb();
     try {
       db.exec('BEGIN IMMEDIATE');
