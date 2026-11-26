@@ -6,6 +6,168 @@ import { AppError } from '../services/errors.ts';
 export class KnexRestaurantStockRepository {
   constructor(private readonly db: Knex = getKnex()) {}
 
+  private id(prefix: string): string {
+    return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+  }
+
+  async countCategories(rid: string): Promise<number> {
+    const row = await this.db('menu_categories').where({ restaurant_id: rid }).count({ count: '*' }).first();
+    return Number(row?.count || 0);
+  }
+
+  async createCategory(rid: string, name: string, station: string, sortOrder: number): Promise<string> {
+    const id = this.id('cat');
+    await this.db('menu_categories').insert({
+      id, restaurant_id: rid, name, station, sort_order: sortOrder, active: 1,
+    });
+    return id;
+  }
+
+  async findCategory(categoryId: string, rid: string) {
+    const row = await this.db('menu_categories')
+      .select({ id: 'id', name: 'name', station: 'station', sortOrder: 'sort_order', active: 'active' })
+      .where({ id: categoryId, restaurant_id: rid }).first();
+    return row || null;
+  }
+
+  async updateCategory(
+    categoryId: string, rid: string,
+    updates: { name?: string; station?: string; sortOrder?: number; active?: boolean },
+  ): Promise<number> {
+    const patch: Record<string, unknown> = {};
+    if (updates.name !== undefined) patch.name = updates.name;
+    if (updates.station !== undefined) patch.station = updates.station;
+    if (updates.sortOrder !== undefined) patch.sort_order = updates.sortOrder;
+    if (updates.active !== undefined) patch.active = updates.active ? 1 : 0;
+    if (!Object.keys(patch).length) return 0;
+    return this.db('menu_categories').where({ id: categoryId, restaurant_id: rid }).update(patch);
+  }
+
+  async countItemsInCategory(categoryId: string, rid: string): Promise<number> {
+    const row = await this.db('menu_items').where({ category_id: categoryId, restaurant_id: rid }).count({ count: '*' }).first();
+    return Number(row?.count || 0);
+  }
+
+  async deleteCategory(categoryId: string, rid: string): Promise<number> {
+    return this.db('menu_categories').where({ id: categoryId, restaurant_id: rid }).del();
+  }
+
+  async createMenuItem(params: {
+    rid: string; categoryId: string; name: string; description: string;
+    priceXof: number; costPriceXof: number; imageUrl: string | null;
+    available: boolean; sortOrder: number; optionsJson: string; optionGroupsJson?: string;
+  }): Promise<string> {
+    const category = await this.findCategory(params.categoryId, params.rid);
+    if (!category) throw new AppError(404, 'Catégorie introuvable pour cet établissement.');
+    const id = this.id('itm');
+    await this.db('menu_items').insert({
+      id, restaurant_id: params.rid, category_id: params.categoryId,
+      name: params.name, description: params.description,
+      price_xof: params.priceXof, cost_price_xof: params.costPriceXof,
+      image_url: params.imageUrl, available: params.available ? 1 : 0,
+      sort_order: params.sortOrder, options_json: params.optionsJson,
+      option_groups_json: params.optionGroupsJson || '[]',
+      created_at: new Date().toISOString(),
+    });
+    return id;
+  }
+
+  async findMenuItemById(itemId: string, rid: string) {
+    const row = await this.db('menu_items')
+      .select('id', 'name').where({ id: itemId, restaurant_id: rid }).first();
+    return row || null;
+  }
+
+  async countOrderReferencesForMenuItem(itemId: string, rid: string): Promise<number> {
+    const row = await this.db('order_items as oi')
+      .join('orders as o', 'o.id', 'oi.order_id')
+      .where('o.restaurant_id', rid)
+      .where('oi.menu_item_id', itemId)
+      .count({ count: '*' }).first();
+    return Number(row?.count || 0);
+  }
+
+  async deleteMenuItem(itemId: string, rid: string): Promise<number> {
+    return this.db('menu_items').where({ id: itemId, restaurant_id: rid }).del();
+  }
+
+  async updateMenuItem(
+    itemId: string, rid: string,
+    updates: {
+      categoryId?: string; available?: boolean; priceXof?: number;
+      costPriceXof?: number; name?: string; description?: string;
+      imageUrl?: string | null; sortOrder?: number;
+      optionsJson?: string; optionGroupsJson?: string;
+    },
+  ): Promise<number> {
+    const patch: Record<string, unknown> = {};
+    if (updates.categoryId !== undefined) {
+      const category = await this.findCategory(updates.categoryId, rid);
+      if (!category) throw new AppError(404, 'Catégorie introuvable pour cet établissement.');
+      patch.category_id = updates.categoryId;
+    }
+    if (updates.available !== undefined) patch.available = updates.available ? 1 : 0;
+    if (updates.priceXof !== undefined) patch.price_xof = updates.priceXof;
+    if (updates.costPriceXof !== undefined) patch.cost_price_xof = updates.costPriceXof;
+    if (updates.name !== undefined) patch.name = updates.name;
+    if (updates.description !== undefined) patch.description = updates.description;
+    if (updates.imageUrl !== undefined) patch.image_url = updates.imageUrl;
+    if (updates.sortOrder !== undefined) patch.sort_order = updates.sortOrder;
+    if (updates.optionsJson !== undefined) patch.options_json = updates.optionsJson;
+    if (updates.optionGroupsJson !== undefined) patch.option_groups_json = updates.optionGroupsJson;
+    if (!Object.keys(patch).length) return 0;
+    return this.db('menu_items').where({ id: itemId, restaurant_id: rid }).update(patch);
+  }
+
+  async findStockById(stockId: string, rid: string) {
+    const row = await this.db('stocks')
+      .select({
+        id: 'id', name: 'name', unit: 'unit', stockSection: 'stock_section',
+        quantity: 'quantity', min_threshold: 'min_threshold',
+        unit_cost_xof: 'unit_cost_xof', supplier_name: 'supplier_name',
+      })
+      .where({ id: stockId, restaurant_id: rid }).first();
+    return row || null;
+  }
+
+  async replaceMenuItemRecipe(
+    trx: Knex.Transaction, rid: string, menuItemId: string,
+    lines: Array<{ stockId: string; quantityPerUnit: number }>,
+  ): Promise<number> {
+    const item = await trx('menu_items')
+      .select('id').where({ id: menuItemId, restaurant_id: rid }).forUpdate().first();
+    if (!item) throw new AppError(404, 'Article du menu introuvable.');
+    const stockIds = Array.from(new Set(lines.map((line) => line.stockId)));
+    const stocks = stockIds.length
+      ? await trx('stocks').select('id', 'unit_cost_xof')
+          .where({ restaurant_id: rid }).whereIn('id', stockIds).forUpdate()
+      : [];
+    if (stocks.length !== stockIds.length) {
+      throw new AppError(404, 'Ingrédient introuvable pour cet établissement.');
+    }
+    const costByStock = new Map(stocks.map((stock) => [String(stock.id), Number(stock.unit_cost_xof || 0)]));
+    const now = new Date().toISOString();
+    await trx('menu_item_recipes').where({
+      restaurant_id: rid, menu_item_id: menuItemId,
+    }).del();
+    let computedCostXof = 0;
+    if (lines.length) {
+      await trx('menu_item_recipes').insert(lines.map((line) => {
+        computedCostXof += (costByStock.get(line.stockId) || 0) * line.quantityPerUnit;
+        return {
+          id: this.id('rec'), restaurant_id: rid, menu_item_id: menuItemId,
+          stock_id: line.stockId, quantity_per_unit: line.quantityPerUnit,
+          created_at: now, updated_at: now,
+        };
+      }));
+    }
+    if (lines.length > 0 && computedCostXof > 0) {
+      await trx('menu_items').where({ id: menuItemId, restaurant_id: rid })
+        .update({ cost_price_xof: Math.round(computedCostXof) });
+    }
+    return Math.round(computedCostXof);
+  }
+
   async findMenuCategories(rid: string) {
     return this.db('menu_categories')
       .select({
