@@ -108,18 +108,18 @@ export const operationsController = {
   },
 
   // Table Calls
-  listTableCalls(req: Request, res: Response) {
+  async listTableCalls(req: Request, res: Response) {
     try {
       res.json({
-        calls: operationsService.listTableCalls(req.auth!.restaurantId!),
+        calls: await operationsService.listTableCalls(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement appels tables.');
     }
   },
-  acknowledgeTableCall(req: Request, res: Response) {
+  async acknowledgeTableCall(req: Request, res: Response) {
     try {
-      operationsService.acknowledgeTableCall(req.auth!, String(req.params.id));
+      await operationsService.acknowledgeTableCall(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur acquittement appel table.');
@@ -127,9 +127,9 @@ export const operationsController = {
   },
 
   // Loyalty
-  getCustomerLoyalty(req: Request, res: Response) {
+  async getCustomerLoyalty(req: Request, res: Response) {
     try {
-      const transactions = operationsService.getCustomerLoyaltyHistory(
+      const transactions = await operationsService.getCustomerLoyaltyHistory(
         req.auth!.restaurantId!,
         String(req.params.id),
       );
@@ -152,16 +152,16 @@ export const operationsController = {
   },
 
   // Customer Reviews
-  listReviews(req: Request, res: Response) {
+  async listReviews(req: Request, res: Response) {
     try {
-      res.json(operationsService.listReviews(req.auth!.restaurantId!));
+      res.json(await operationsService.listReviews(req.auth!.restaurantId!));
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement avis clients.');
     }
   },
-  replyReview(req: Request, res: Response) {
+  async replyReview(req: Request, res: Response) {
     try {
-      operationsService.replyReview(
+      await operationsService.replyReview(
         req.auth!,
         String(req.params.id),
         req.body || {},
