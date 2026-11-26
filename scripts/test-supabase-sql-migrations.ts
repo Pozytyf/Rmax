@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",
     );
-    assert.equal(Number(policies.rows[0]?.count), 46, 'Expected 46 tenant/security policies');
+    assert.equal(Number(policies.rows[0]?.count), 47, 'Expected 47 tenant/security policies');
 
     const access = await client.query<{
       anon_orders: boolean;
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
       await client.query('ROLLBACK');
     }
 
-    process.stdout.write('Supabase SQL migrations: 46 RLS policies, grants, function search_path and cross-tenant denial verified.\\n');
+    process.stdout.write('Supabase SQL migrations: 47 RLS policies, grants, function search_path and cross-tenant denial verified.\\n');
   } finally {
     await client.end();
   }

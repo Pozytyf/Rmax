@@ -135,7 +135,7 @@ async function main(): Promise<void> {
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",
     );
-    assert.equal(Number(policies.rows[0]?.count), 46, 'Expected 46 bootstrap RLS policies');
+    assert.equal(Number(policies.rows[0]?.count), 47, 'Expected 47 bootstrap RLS policies');
 
     const grants = await client.query<{
       anon_orders: boolean;
@@ -154,7 +154,7 @@ async function main(): Promise<void> {
     assert.equal(grants.rows[0]?.auth_users, false);
     assert.equal(grants.rows[0]?.anon_plans, true);
 
-    process.stdout.write('Supabase bootstrap schema and migrations: tables, 46 RLS policies and grants verified.\\n');
+    process.stdout.write('Supabase bootstrap schema and migrations: tables, 47 RLS policies and grants verified.\\n');
   } finally {
     await client.end();
   }
