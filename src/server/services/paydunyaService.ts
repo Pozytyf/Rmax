@@ -317,6 +317,13 @@ export async function confirmPaydunyaInvoice(
   }
 
   const creds = resolvePaydunyaPlatformCredentials();
+  if (process.env.NODE_ENV === 'production' && creds.mode !== 'LIVE') {
+    return {
+      completed: false,
+      status: 'failed',
+      providerMessage: 'Le mode PayDunya LIVE est obligatoire en production.',
+    };
+  }
   if (!creds.configured) {
     return {
       completed: false,
