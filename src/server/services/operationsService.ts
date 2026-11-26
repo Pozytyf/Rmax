@@ -15,6 +15,7 @@ import {
 } from '../rateLimit.ts';
 import { BaseService } from './BaseService.ts';
 import { AppError } from './errors.ts';
+import type { B2bInvoice } from '../../types/index.ts';
 
 function usesPostgresRepositories(): boolean {
   return ['pg', 'postgres', 'postgresql'].includes((process.env.DATABASE_CLIENT || '').toLowerCase());

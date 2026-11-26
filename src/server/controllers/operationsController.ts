@@ -182,9 +182,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur chargement inventaires.');
     }
   },
-  createInventoryCount(req: Request, res: Response) {
+  async createInventoryCount(req: Request, res: Response) {
     try {
-      const count = operationsService.createInventoryCount(
+      const count = await operationsService.createInventoryCount(
         req.auth!,
         req.body || {},
       );
@@ -193,9 +193,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur validation inventaire.');
     }
   },
-  recordWaste(req: Request, res: Response) {
+  async recordWaste(req: Request, res: Response) {
     try {
-      const result = operationsService.recordTypedWaste(
+      const result = await operationsService.recordTypedWaste(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -230,9 +230,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur suppression créneau.');
     }
   },
-  clockWithPin(req: Request, res: Response) {
+  async clockWithPin(req: Request, res: Response) {
     try {
-      const result = operationsService.clockWithPin(req.auth!, req.body || {});
+      const result = await operationsService.clockWithPin(req.auth!, req.body || {});
       res.json(result);
     } catch (err) {
       handleControllerError(res, err, 'Erreur pointage PIN.');
@@ -249,9 +249,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur chargement factures B2B.');
     }
   },
-  createB2bInvoice(req: Request, res: Response) {
+  async createB2bInvoice(req: Request, res: Response) {
     try {
-      const document = operationsService.createB2bInvoice(
+      const document = await operationsService.createB2bInvoice(
         req.auth!,
         req.body || {},
       );
@@ -260,9 +260,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur création devis / facture B2B.');
     }
   },
-  updateB2bStatus(req: Request, res: Response) {
+  async updateB2bStatus(req: Request, res: Response) {
     try {
-      operationsService.updateB2bInvoiceStatus(
+      await operationsService.updateB2bInvoiceStatus(
         req.auth!,
         String(req.params.id),
         req.body?.status,
@@ -272,9 +272,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur mise à jour document B2B.');
     }
   },
-  convertProforma(req: Request, res: Response) {
+  async convertProforma(req: Request, res: Response) {
     try {
-      const result = operationsService.convertProformaToInvoice(
+      const result = await operationsService.convertProformaToInvoice(
         req.auth!,
         String(req.params.id),
       );
