@@ -50,6 +50,18 @@ async function main(): Promise<void> {
     const schemaSql = await fs.readFile(schemaPath, 'utf8');
     await client.query(schemaSql);
 
+    // Validate the complete bootstrap path: base schema plus the same
+    // operational/RLS migrations applied to an existing Supabase project.
+    for (const migration of [
+      '202611260011_add_operations_schema_and_rls.sql',
+      '202611260012_pin_tenant_function_search_path.sql',
+      '202611260013_apply_existing_tenant_rls.sql',
+      '202611260014_deny_api_access_to_internal_tables.sql',
+    ]) {
+      const migrationPath = path.resolve(process.cwd(), 'supabase/migrations', migration);
+      await client.query(await fs.readFile(migrationPath, 'utf8'));
+    }
+
     const requiredTables = [
       'restaurants',
       'tenants',
@@ -106,7 +118,7 @@ async function main(): Promise<void> {
     assert.equal(grants.rows[0]?.auth_users, false);
     assert.equal(grants.rows[0]?.anon_plans, true);
 
-    process.stdout.write('Supabase bootstrap schema: tables, 46 RLS policies and grants verified.\\n');
+    process.stdout.write('Supabase bootstrap schema and migrations: tables, 46 RLS policies and grants verified.\\n');
   } finally {
     await client.end();
   }
