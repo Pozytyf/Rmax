@@ -30,8 +30,8 @@ export class KnexOperationsReadRepository {
     }));
   }
 
-  async findComboById(id: string, rid: string): Promise<MenuCombo | null> {
-    const r = await this.db('menu_combos').where({ id, restaurant_id: rid }).first();
+  async findComboById(id: string, rid: string, executor: Knex | Knex.Transaction = this.db): Promise<MenuCombo | null> {
+    const r = await executor('menu_combos').where({ id, restaurant_id: rid }).first();
     if (!r) return null;
     return {
       id: String(r.id),
@@ -61,7 +61,7 @@ export class KnexOperationsReadRepository {
       id, restaurant_id: params.rid, name: params.name,
       description: params.description, price_xof: params.priceXof,
       image_url: params.imageUrl, is_daily_special: params.isDailySpecial ? 1 : 0,
-      items_json: JSON.stringify(params.items), active: true,
+      items_json: JSON.stringify(params.items), active: 1,
       created_at: new Date().toISOString(),
     });
     return id;
