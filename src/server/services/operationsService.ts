@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { getDb, generateId } from '../db.ts';
 import { type AuthContext, recordAudit, recordAuditWithKnex } from '../auth.ts';
@@ -1547,7 +1548,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
     const slugBase = name
       .toLowerCase()
       .normalize('NFD')
-      .replace(/[\\u0300-\\u036f]/g, '')
+      .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
     const slug = `${slugBase || 'site'}-${crypto.randomUUID().replace(/-/g, '').slice(0, 6)}`;
