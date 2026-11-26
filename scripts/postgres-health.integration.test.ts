@@ -375,20 +375,25 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
 
     const orderId = `it_order_${suffix}`;
     const diningTable = await db('dining_tables').where({ restaurant_id: restaurantId }).first();
-    await db('orders').insert({
-      id: orderId, restaurant_id: restaurantId, order_number: `IT-${suffix.slice(0, 6)}`,
-      order_type: 'DINE_IN', table_id: diningTable.id,
-      customer_name: 'Client integration', status: 'PENDING',
-      subtotal_xof: 3200, discount_xof: 0, tax_xof: 0, total_xof: 3200,
-      paid_xof: 0, notes: '', created_by_user_id: userId,
-      created_at: now, updated_at: now,
-    });
-    await db('order_items').insert({
-      id: `it_order_item_${suffix}`, order_id: orderId,
-      menu_item_id: menuItemId, name: 'Plat PostgreSQL', station: 'KITCHEN',
-      unit_price_xof: 3200, options_summary: '', options_delta_xof: 0,
-      quantity: 1, line_total_xof: 3200, notes: '', prep_status: 'PENDING',
-    });
+    await db.transaction((trx) =>
+      knexRestaurantStockRepository.insertPosOrder(trx, {
+        orderId, rid: restaurantId, orderNumber: `IT-${suffix.slice(0, 6)}`,
+        orderType: 'DINE_IN', tableId: String(diningTable.id),
+        customerName: 'Client integration', customerPhone: '',
+        subtotalXof: 3200, discountXof: 0, taxXof: 0, totalXof: 3200,
+        notes: '', idempotencyKey: `it-idem-${suffix}`,
+        userId, now,
+        lines: [{
+          id: `it_order_item_${suffix}`, menuItemId,
+          name: 'Plat PostgreSQL', station: 'KITCHEN',
+          unitPriceXof: 3200, optionsSummary: '', optionsDeltaXof: 0,
+          quantity: 1, lineTotalXof: 3200, notes: '',
+        }],
+      }),
+    );
+    assert.equal((await knexRestaurantStockRepository.findOrderByIdempotencyKey(
+      restaurantId, `it-idem-${suffix}`,
+    ))?.id, orderId);
     const orderList = await knexRestaurantStockRepository.findOrdersWithItems(restaurantId);
     assert.equal(orderList.find((row) => row.id === orderId)?.items.length, 1);
     await db.transaction(async (trx) => {
