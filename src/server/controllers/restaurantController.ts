@@ -220,7 +220,7 @@ export const restaurantController = {
 
   async updateTable(req: Request, res: Response) {
     try {
-      await restaurantService.updateTable(
+      await await restaurantService.updateTable(
         req.auth!.restaurantId!,
         String(req.params.id),
         req.body || {},
@@ -233,7 +233,7 @@ export const restaurantController = {
 
   async deleteTable(req: Request, res: Response) {
     try {
-      await restaurantService.deleteTable(req.auth!, String(req.params.id));
+      await await restaurantService.deleteTable(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression table.');
@@ -242,7 +242,7 @@ export const restaurantController = {
 
   async transferTable(req: Request, res: Response) {
     try {
-      await restaurantService.transferTable(
+      await await restaurantService.transferTable(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -255,7 +255,7 @@ export const restaurantController = {
 
   async mergeTables(req: Request, res: Response) {
     try {
-      await restaurantService.mergeTables(
+      await await restaurantService.mergeTables(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -268,7 +268,7 @@ export const restaurantController = {
 
   async updateTableStatus(req: Request, res: Response) {
     try {
-      await restaurantService.updateTableStatus(
+      await await restaurantService.updateTableStatus(
         req.auth!.restaurantId!,
         String(req.params.id),
         req.body?.status,
