@@ -31,11 +31,21 @@ postgres-runtime-config:
 
 existing-tests:
   stage: validate
+  variables:
+    NODE_ENV: test
+    DATABASE_CLIENT: sqlite
+    DATABASE_URL: ""
+    SUPABASE_DB_URL: ""
   script:
     - bun run test
 
 full-test-suite:
   stage: validate
+  variables:
+    NODE_ENV: test
+    DATABASE_CLIENT: sqlite
+    DATABASE_URL: ""
+    SUPABASE_DB_URL: ""
   script:
     - bun run test:all
 

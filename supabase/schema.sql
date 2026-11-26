@@ -986,9 +986,7 @@ BEGIN
     'roles',
     'sessions',
     'auth_tokens',
-    'schema_migrations',
-    'knex_migrations',
-    'knex_migrations_lock'
+    'schema_migrations'
   ]
   LOOP
     IF to_regclass(format('public.%I', tbl)) IS NOT NULL THEN
