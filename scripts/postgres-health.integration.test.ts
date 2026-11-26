@@ -6,6 +6,8 @@ import crypto from 'node:crypto';
 import { knexAuthRepository } from '../src/server/repositories/authRepository.knex.ts';
 import { recordAuditWithKnex, resolveAuthContextWithKnex, signSessionToken } from '../src/server/auth.ts';
 import { knexPublicRepository } from '../src/server/repositories/publicRepository.knex.ts';
+import { knexOperationsReadRepository } from '../src/server/repositories/operationsRepository.knex.ts';
+import { knexRestaurantStockRepository } from '../src/server/repositories/restaurantRepository.knex.ts';
 
 test('selected PostgreSQL pool is reachable and schema is fully migrated', async () => {
   const health = await checkSupabaseHealth();
@@ -322,3 +324,92 @@ test('PostgreSQL public catalog and order tracking reads are tenant/table scoped
     await db('tenants').where({ id: restaurantId }).del();
   }
 });
+
+
+test('PostgreSQL menu and operations repositories support tenant-scoped combo and promotion CRUD', async () => {
+  const db = getKnex();
+  const suffix = crypto.randomUUID().replace(/-/g, '');
+  const restaurantId = `it_menu_rest_${suffix}`;
+  const userId = `it_menu_user_${suffix}`;
+  const memberId = `it_menu_member_${suffix}`;
+  const subscriptionId = `it_menu_sub_${suffix}`;
+  const sessionId = `it_menu_session_${suffix}`;
+  const slug = `it-menu-${suffix}`;
+  const email = `it-menu-${suffix}@example.invalid`;
+  const now = new Date().toISOString();
+  const future = new Date(Date.now() + 60_000).toISOString();
+  let menuItemId = `it_menu_item_${suffix}`;
+  let comboId = '';
+  let promotionId = '';
+
+  try {
+    const plan = await knexAuthRepository.findPlanForRegistration('ESSENTIEL');
+    assert.ok(plan?.id);
+    await db.transaction(async (trx) => {
+      await knexAuthRepository.createRestaurantWithOwnerAndStarterData({
+        restaurantId, restaurantName: 'Menu Repository Integration',
+        slug, email, phone: '+22500000004', city: 'Abidjan',
+        userId, ownerName: 'Menu Test Owner', passwordHash: 'not-used',
+        memberId, subId: subscriptionId, planId: plan.id,
+        trialEndsAt: future, sessionId, sessionExpiresAt: future,
+        userAgent: 'menu-repository-test', now,
+      }, trx);
+    });
+
+    const category = await db('menu_categories')
+      .where({ restaurant_id: restaurantId }).first();
+    assert.ok(category?.id);
+    await db('menu_items').insert({
+      id: menuItemId, restaurant_id: restaurantId,
+      category_id: category.id, name: 'Plat PostgreSQL',
+      description: 'Fixture integration', price_xof: 3200,
+      cost_price_xof: 900, image_url: null, available: true,
+      sort_order: 1, options_json: '[]', option_groups_json: '[]',
+      created_at: now,
+    });
+
+    const categories = await knexRestaurantStockRepository.findMenuCategories(restaurantId);
+    const items = await knexRestaurantStockRepository.findMenuItems(restaurantId);
+    assert.ok(categories.some((row) => String(row.id) === String(category.id)));
+    assert.ok(items.some((row) => String(row.id) === menuItemId));
+
+    comboId = await knexOperationsReadRepository.createCombo({
+      rid: restaurantId, name: 'Menu test combo', description: 'Fixture',
+      priceXof: 5000, imageUrl: null, isDailySpecial: false,
+      items: [{ label: 'Plat PostgreSQL', quantity: 1, menuItemId }],
+    });
+    assert.ok(await knexOperationsReadRepository.findComboById(comboId, restaurantId));
+    assert.equal((await knexOperationsReadRepository.findCombos(restaurantId, true)).some((row) => row.id === comboId), true);
+    await knexOperationsReadRepository.updateCombo(comboId, restaurantId, { active: false });
+    assert.equal((await knexOperationsReadRepository.findCombos(restaurantId, true)).some((row) => row.id === comboId), false);
+
+    promotionId = await knexOperationsReadRepository.createPromotion({
+      rid: restaurantId, name: 'Promotion test', code: 'ITMENU',
+      promoType: 'PROMO_CODE', discountType: 'PERCENT',
+      discountValue: 10, minOrderXof: 1000, days: [0, 1, 2, 3, 4, 5, 6],
+      startTime: '00:00', endTime: '23:59', categoryId: null, maxUses: 20,
+    });
+    assert.ok((await knexOperationsReadRepository.findPromotions(restaurantId)).some((row) => row.id === promotionId));
+    await knexOperationsReadRepository.updatePromotion(promotionId, restaurantId, { active: false });
+    assert.equal((await knexOperationsReadRepository.findPromotions(restaurantId)).find((row) => row.id === promotionId)?.active, false);
+
+    assert.equal((await knexOperationsReadRepository.findCombos(`other_${suffix}`)).length, 0);
+    assert.equal((await knexOperationsReadRepository.findPromotions(`other_${suffix}`)).length, 0);
+  } finally {
+    if (promotionId) await db('promotions').where({ id: promotionId, restaurant_id: restaurantId }).del();
+    if (comboId) await db('menu_combos').where({ id: comboId, restaurant_id: restaurantId }).del();
+    await db('menu_items').where({ id: menuItemId, restaurant_id: restaurantId }).del();
+    await db('audit_logs').where({ restaurant_id: restaurantId }).del();
+    await db('auth_tokens').where({ user_id: userId }).del();
+    await db('sessions').where({ user_id: userId }).del();
+    await db('restaurant_members').where({ user_id: userId }).del();
+    await db('subscriptions').where({ restaurant_id: restaurantId }).del();
+    await db('qr_codes').where({ restaurant_id: restaurantId }).del();
+    await db('dining_tables').where({ restaurant_id: restaurantId }).del();
+    await db('menu_categories').where({ restaurant_id: restaurantId }).del();
+    await db('users').where({ id: userId }).del();
+    await db('restaurants').where({ id: restaurantId }).del();
+    await db('tenants').where({ id: restaurantId }).del();
+  }
+});
+
