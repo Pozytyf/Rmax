@@ -446,6 +446,32 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal(await knexRestaurantStockRepository.countOrderReferencesForMenuItem(extraMenuItemId, restaurantId), 0);
     assert.equal(await knexRestaurantStockRepository.deleteMenuItem(extraMenuItemId, restaurantId), 1);
 
+    const inventory = await db.transaction((trx) =>
+      knexOperationsReadRepository.createInventoryCount(trx, {
+        restaurantId, title: 'Inventaire test', stockSection: 'KITCHEN',
+        notes: 'integration', createdByName: 'Menu Test Owner', userId,
+        lines: [{ stockId, countedQty: 8 }],
+      }),
+    );
+    assert.equal(inventory.totalVarianceXof, 3000);
+    const inventoryRead = await knexOperationsReadRepository.findInventoryCounts(restaurantId);
+    assert.equal(inventoryRead.find((row) => row.id === inventory.id)?.lines[0]?.varianceQty, 3);
+
+    const waste = await db.transaction((trx) =>
+      knexOperationsReadRepository.recordTypedWaste(trx, {
+        restaurantId, stockId, quantity: 2, category: 'EXPIRED',
+        reason: 'integration waste', userId,
+      }),
+    );
+    assert.equal(waste.quantity, 6);
+    await assert.rejects(
+      db.transaction((trx) => knexOperationsReadRepository.recordTypedWaste(trx, {
+        restaurantId, stockId, quantity: 7, category: 'BROKEN',
+        reason: 'overdraw should fail', userId,
+      })),
+      /Stock insuffisant/,
+    );
+
     const movementIn = await db.transaction((trx) =>
       knexRestaurantStockRepository.applyStockMovement(trx, {
         rid: restaurantId, stockId, movementType: 'IN', quantity: 4,
@@ -501,32 +527,6 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
     assert.equal((await knexRestaurantStockRepository.findNotificationsForRestaurant(restaurantId)).some((row) => row.id === notification.id), true);
     assert.equal(await knexRestaurantStockRepository.markNotificationsRead(restaurantId, notification.id), 1);
     assert.equal((await knexRestaurantStockRepository.findNotificationsForRestaurant(restaurantId)).find((row) => row.id === notification.id)?.isRead, true);
-
-    const inventory = await db.transaction((trx) =>
-      knexOperationsReadRepository.createInventoryCount(trx, {
-        restaurantId, title: 'Inventaire test', stockSection: 'KITCHEN',
-        notes: 'integration', createdByName: 'Menu Test Owner', userId,
-        lines: [{ stockId, countedQty: 8 }],
-      }),
-    );
-    assert.equal(inventory.totalVarianceXof, 3000);
-    const inventoryRead = await knexOperationsReadRepository.findInventoryCounts(restaurantId);
-    assert.equal(inventoryRead.find((row) => row.id === inventory.id)?.lines[0]?.varianceQty, 3);
-
-    const waste = await db.transaction((trx) =>
-      knexOperationsReadRepository.recordTypedWaste(trx, {
-        restaurantId, stockId, quantity: 2, category: 'EXPIRED',
-        reason: 'integration waste', userId,
-      }),
-    );
-    assert.equal(waste.quantity, 6);
-    await assert.rejects(
-      db.transaction((trx) => knexOperationsReadRepository.recordTypedWaste(trx, {
-        restaurantId, stockId, quantity: 7, category: 'BROKEN',
-        reason: 'overdraw should fail', userId,
-      })),
-      /Stock insuffisant/,
-    );
 
     const clockIn = await db.transaction((trx) =>
       knexOperationsReadRepository.toggleStaffClock(trx, {
