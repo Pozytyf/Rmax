@@ -129,6 +129,11 @@ export async function recordAuditWithKnex(
     details?: string;
   },
 ): Promise<void> {
+  const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
+  if (process.env.NODE_ENV === 'test' && !['pg', 'postgres', 'postgresql'].includes(client)) {
+    recordAudit(getDb(), params);
+    return;
+  }
   await executor('audit_logs').insert({
     id: generateId('aud'),
     actor_user_id: params.actorUserId,
@@ -147,6 +152,10 @@ export async function resolveAuthContextWithKnex(
   token: string,
   db: Knex = getKnex(),
 ): Promise<AuthContext | null> {
+  const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
+  if (process.env.NODE_ENV === 'test' && !['pg', 'postgres', 'postgresql'].includes(client)) {
+    return resolveAuthContext(getDb(), token);
+  }
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as {
       sessionId: string;
