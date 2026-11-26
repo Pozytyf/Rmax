@@ -687,6 +687,192 @@ export class KnexRestaurantStockRepository {
     }
   }
 
+  async findTablesWithQrAndActiveOrder(rid: string) {
+    const [tables, qrRows, activeOrders] = await Promise.all([
+      this.db('dining_tables').where({ restaurant_id: rid }).orderBy('zone', 'asc').orderBy('label', 'asc'),
+      this.db('qr_codes').where({ restaurant_id: rid, status: 'ACTIVE' }).orderBy('version', 'desc'),
+      this.db('orders').where({ restaurant_id: rid }).whereNotIn('status', ['PAID', 'CANCELLED']).orderBy('created_at', 'desc'),
+    ]);
+    const qrByTable = new Map<string, Record<string, unknown>>();
+    for (const qr of qrRows) if (!qrByTable.has(String(qr.table_id))) qrByTable.set(String(qr.table_id), qr);
+    const orderByTable = new Map<string, Record<string, unknown>>();
+    for (const order of activeOrders) {
+      if (order.table_id && !orderByTable.has(String(order.table_id))) orderByTable.set(String(order.table_id), order);
+    }
+    return tables.map((table) => {
+      const qr = qrByTable.get(String(table.id));
+      const order = orderByTable.get(String(table.id));
+      return {
+        id: String(table.id), restaurantId: String(table.restaurant_id),
+        zone: String(table.zone || ''), label: String(table.label),
+        capacity: Number(table.capacity || 0), status: String(table.status),
+        posX: Number(table.pos_x || 0), posY: Number(table.pos_y || 0),
+        shape: String(table.shape || 'ROUND'),
+        qrToken: qr ? String(qr.token) : null,
+        qrVersion: qr ? Number(qr.version) : null,
+        qrStatus: qr ? String(qr.status) : null,
+        activeOrderId: order ? String(order.id) : null,
+        activeOrderTotalXof: order ? Number(order.total_xof || 0) : null,
+      };
+    });
+  }
+
+  async createTableWithQr(
+    trx: Knex.Transaction,
+    params: {
+      rid: string; zone: string; label: string; capacity: number;
+      posX?: number; posY?: number; shape: 'ROUND' | 'RECT';
+    },
+  ): Promise<{ tableId: string; qrToken: string }> {
+    const restaurant = await trx('restaurants').select('id').where({ id: params.rid }).forUpdate().first();
+    if (!restaurant) throw new AppError(404, 'Établissement introuvable.');
+    const countRow = await trx('dining_tables').where({ restaurant_id: params.rid }).count({ count: '*' }).first();
+    const idx = Number(countRow?.count || 0);
+    const tableId = this.id('tbl');
+    const version = 1;
+    const qrToken = `${params.rid.slice(-6)}-${crypto.randomUUID().replace(/-/g, '').slice(-8)}-v${version}`;
+    await trx('dining_tables').insert({
+      id: tableId, restaurant_id: params.rid,
+      zone: params.zone, label: params.label, capacity: params.capacity,
+      status: 'AVAILABLE',
+      pos_x: params.posX ?? 60 + (idx % 4) * 180,
+      pos_y: params.posY ?? 60 + Math.floor(idx / 4) * 150,
+      shape: params.shape,
+    });
+    await trx('qr_codes').insert({
+      id: this.id('qr'), restaurant_id: params.rid,
+      table_id: tableId, token: qrToken, version,
+      status: 'ACTIVE', created_at: new Date().toISOString(),
+    });
+    return { tableId, qrToken };
+  }
+
+  async findActiveOrdersForTable(tableId: string, rid: string, executor: Knex | Knex.Transaction = this.db) {
+    return executor('orders')
+      .select('id', 'order_number', 'subtotal_xof', 'discount_xof', 'tax_xof',
+        'total_xof', 'paid_xof', 'notes', 'status')
+      .where({ table_id: tableId, restaurant_id: rid })
+      .whereNotIn('status', ['PAID', 'CANCELLED'])
+      .orderBy('created_at', 'asc');
+  }
+
+  async updateTable(
+    tableId: string, rid: string,
+    updates: {
+      zone?: string; label?: string; capacity?: number; status?: string;
+      posX?: number; posY?: number; shape?: 'ROUND' | 'RECT';
+    },
+    executor: Knex | Knex.Transaction = this.db,
+  ): Promise<number> {
+    const patch: Record<string, unknown> = {};
+    if (updates.zone !== undefined) patch.zone = updates.zone;
+    if (updates.label !== undefined) patch.label = updates.label;
+    if (updates.capacity !== undefined) patch.capacity = updates.capacity;
+    if (updates.status !== undefined) patch.status = updates.status;
+    if (updates.posX !== undefined && updates.posY !== undefined) {
+      patch.pos_x = updates.posX; patch.pos_y = updates.posY;
+    }
+    if (updates.shape !== undefined) patch.shape = updates.shape;
+    if (!Object.keys(patch).length) return 0;
+    return executor('dining_tables').where({ id: tableId, restaurant_id: rid }).update(patch);
+  }
+
+  async deleteTable(trx: Knex.Transaction, tableId: string, rid: string): Promise<void> {
+    const table = await trx('dining_tables').where({ id: tableId, restaurant_id: rid }).forUpdate().first();
+    if (!table) throw new AppError(404, 'Table introuvable.');
+    const activeOrders = await this.findActiveOrdersForTable(tableId, rid, trx);
+    if (activeOrders.length) {
+      throw new AppError(409, 'Impossible de supprimer cette table : elle a une commande en cours. Transférez ou encaissez la commande d’abord.');
+    }
+    await trx('orders').where({ table_id: tableId, restaurant_id: rid }).update({ table_id: null });
+    await trx('reservations').where({ table_id: tableId, restaurant_id: rid }).update({ table_id: null });
+    await trx('qr_codes').where({ table_id: tableId, restaurant_id: rid }).del();
+    await trx('dining_tables').where({ id: tableId, restaurant_id: rid }).del();
+  }
+
+  async transferTableOrders(
+    trx: Knex.Transaction, rid: string, sourceTableId: string, targetTableId: string,
+  ): Promise<void> {
+    const ids = [sourceTableId, targetTableId].sort();
+    const locked = await trx('dining_tables').where({ restaurant_id: rid }).whereIn('id', ids).orderBy('id').forUpdate();
+    if (locked.length !== 2) throw new AppError(404, 'Table source ou destination introuvable.');
+    const sourceOrders = await this.findActiveOrdersForTable(sourceTableId, rid, trx);
+    if (!sourceOrders.length) throw new AppError(400, 'Aucune commande active à transférer sur cette table.');
+    const targetOrders = await this.findActiveOrdersForTable(targetTableId, rid, trx);
+    if (targetOrders.length) throw new AppError(409, 'La table de destination est déjà occupée par une commande active. Utilisez la fusion de tables.');
+    await trx('orders').where({ table_id: sourceTableId, restaurant_id: rid })
+      .whereNotIn('status', ['PAID', 'CANCELLED'])
+      .update({ table_id: targetTableId, updated_at: new Date().toISOString() });
+    await trx('dining_tables').where({ id: sourceTableId, restaurant_id: rid }).update({ status: 'AVAILABLE' });
+    await trx('dining_tables').where({ id: targetTableId, restaurant_id: rid }).update({ status: 'OCCUPIED' });
+  }
+
+  async mergeTablesOrders(
+    trx: Knex.Transaction, rid: string, sourceTableId: string, targetTableId: string,
+  ): Promise<void> {
+    const ids = [sourceTableId, targetTableId].sort();
+    const locked = await trx('dining_tables').where({ restaurant_id: rid }).whereIn('id', ids).orderBy('id').forUpdate();
+    if (locked.length !== 2) throw new AppError(404, 'Table source ou destination introuvable.');
+    const sourceOrders = await this.findActiveOrdersForTable(sourceTableId, rid, trx);
+    if (!sourceOrders.length) throw new AppError(400, 'La table source ne possède aucune commande active à fusionner.');
+    const targetOrders = await this.findActiveOrdersForTable(targetTableId, rid, trx);
+    const targetActiveOrderId = targetOrders.length ? String(targetOrders[0].id) : null;
+    const now = new Date().toISOString();
+    if (targetActiveOrderId) {
+      const sourceIds = sourceOrders.map((order) => String(order.id));
+      await trx('order_items').whereIn('order_id', sourceIds).update({ order_id: targetActiveOrderId });
+      await trx('payments').where({ restaurant_id: rid }).whereIn('order_id', sourceIds).update({ order_id: targetActiveOrderId });
+      const totals = sourceOrders.reduce((sum, order) => ({
+        subtotal: sum.subtotal + Number(order.subtotal_xof || 0),
+        discount: sum.discount + Number(order.discount_xof || 0),
+        tax: sum.tax + Number(order.tax_xof || 0),
+        total: sum.total + Number(order.total_xof || 0),
+        paid: sum.paid + Number(order.paid_xof || 0),
+        notes: order.notes ? `${sum.notes} | Fusion ${order.order_number}: ${order.notes}` : sum.notes,
+      }), { subtotal: 0, discount: 0, tax: 0, total: 0, paid: 0, notes: '' });
+      await trx('orders').where({ id: targetActiveOrderId, restaurant_id: rid }).update({
+        subtotal_xof: trx.raw('subtotal_xof + ?', [totals.subtotal]),
+        discount_xof: trx.raw('discount_xof + ?', [totals.discount]),
+        tax_xof: trx.raw('tax_xof + ?', [totals.tax]),
+        total_xof: trx.raw('total_xof + ?', [totals.total]),
+        paid_xof: trx.raw('paid_xof + ?', [totals.paid]),
+        notes: totals.notes ? trx.raw("TRIM(notes || ' | ' || ?)", [totals.notes]) : trx.ref('notes'),
+        updated_at: now,
+      });
+      await trx('orders').where({ restaurant_id: rid }).whereIn('id', sourceIds).del();
+    } else {
+      await trx('orders').where({ table_id: sourceTableId, restaurant_id: rid })
+        .whereNotIn('status', ['PAID', 'CANCELLED'])
+        .update({ table_id: targetTableId, updated_at: now });
+    }
+    await trx('dining_tables').where({ id: sourceTableId, restaurant_id: rid }).update({ status: 'AVAILABLE' });
+    await trx('dining_tables').where({ id: targetTableId, restaurant_id: rid }).update({ status: 'OCCUPIED' });
+  }
+
+  async updateTableStatus(tableId: string, rid: string, status: string): Promise<number> {
+    return this.db('dining_tables').where({ id: tableId, restaurant_id: rid }).update({ status });
+  }
+
+  async regenerateTableQr(
+    trx: Knex.Transaction, tableId: string, rid: string,
+  ): Promise<{ token: string; version: number }> {
+    const table = await trx('dining_tables').select('id')
+      .where({ id: tableId, restaurant_id: rid }).forUpdate().first();
+    if (!table) throw new AppError(404, 'Table introuvable.');
+    const maxRow = await trx('qr_codes').where({ table_id: tableId, restaurant_id: rid })
+      .max({ maxVersion: 'version' }).first();
+    const version = Number(maxRow?.maxVersion || 0) + 1;
+    const token = `${rid.slice(-6)}-${crypto.randomUUID().replace(/-/g, '').slice(-8)}-v${version}`;
+    const now = new Date().toISOString();
+    await trx('qr_codes').where({ table_id: tableId, restaurant_id: rid, status: 'ACTIVE' })
+      .update({ status: 'REVOKED', revoked_at: now });
+    await trx('qr_codes').insert({
+      id: this.id('qr'), restaurant_id: rid, table_id: tableId,
+      token, version, status: 'ACTIVE', created_at: now,
+    });
+    return { token, version };
+  }
+
   async findPayments(rid: string) {
     const rows = await this.db('payments as p')
       .join('orders as o', function () {
