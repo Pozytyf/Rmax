@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { getDb, generateId } from '../db.ts';
-import { type AuthContext, recordAudit } from '../auth.ts';
+import { type AuthContext, recordAudit, recordAuditWithKnex } from '../auth.ts';
 import { ROLE_PERMISSION_CEILING } from '../rbac.ts';
 import {
   broadcastOrderTrackerEvent,
@@ -11,6 +11,7 @@ import {
   restaurantRepository,
 } from '../repositories/restaurantRepository.ts';
 import { BaseService } from './BaseService.ts';
+import { getKnex } from '../knex.ts';
 import { AppError } from './errors.ts';
 import {
   isEnvSmtpConfigured,
@@ -166,22 +167,19 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     };
   }
 
-  getRecipes(rid: string, menuItemId?: string) {
+  async getRecipes(rid: string, menuItemId?: string) {
     this.ensureTenantId(rid);
-    return restaurantRepository.findMenuRecipes(rid, menuItemId);
+    return usesPostgresRepositories()
+      ? await knexRestaurantStockRepository.findMenuRecipes(rid, menuItemId)
+      : restaurantRepository.findMenuRecipes(rid, menuItemId);
   }
 
-  updateMenuItemRecipe(
+  async updateMenuItemRecipe(
     auth: AuthContext,
     menuItemId: string,
     body: Record<string, unknown>,
   ) {
     const rid = auth.restaurantId!;
-    const item = restaurantRepository.findMenuItemById(menuItemId, rid);
-    if (!item) {
-      throw new AppError(404, 'Article du menu introuvable.');
-    }
-
     const rawLines = Array.isArray(body?.lines) ? body.lines : [];
     const cleanMap = new Map<string, number>();
     for (const raw of rawLines) {
@@ -201,11 +199,23 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     const cleanLines = Array.from(cleanMap.entries()).map(
       ([stockId, quantityPerUnit]) => ({ stockId, quantityPerUnit }),
     );
-    const saved = restaurantRepository.replaceMenuItemRecipe(
-      rid,
-      menuItemId,
-      cleanLines,
-    );
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        await knexRestaurantStockRepository.replaceMenuItemRecipe(trx, rid, menuItemId, cleanLines);
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'MENU_RECIPE_UPDATED', targetType: 'MENU_ITEM',
+          targetId: menuItemId, details: `${cleanLines.length} ingrédient(s) lié(s)`,
+        });
+      });
+      const saved = await knexRestaurantStockRepository.findMenuRecipes(rid, menuItemId);
+      broadcastRestaurantEvent(rid, 'menu:updated', { itemId: menuItemId });
+      return saved;
+    }
+    const item = restaurantRepository.findMenuItemById(menuItemId, rid);
+    if (!item) throw new AppError(404, 'Article du menu introuvable.');
+    const saved = restaurantRepository.replaceMenuItemRecipe(rid, menuItemId, cleanLines);
 
     recordAudit(getDb(), {
       actorUserId: auth.userId,
@@ -222,12 +232,22 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     return saved;
   }
 
-  createCategory(rid: string, body: Record<string, unknown>) {
+  async createCategory(rid: string, body: Record<string, unknown>) {
     const { name, station } = body || {};
     if (typeof name !== 'string' || name.trim().length < 2) {
       throw new AppError(400, 'Nom de catégorie requis.');
     }
     const st = station === 'BAR' ? 'BAR' : 'KITCHEN';
+    if (usesPostgresRepositories()) {
+      const created = await getKnex().transaction(async (trx) => {
+        await trx('restaurants').select('id').where({ id: rid }).forUpdate().first();
+        const count = await knexRestaurantStockRepository.countCategories(rid, trx);
+        const id = await knexRestaurantStockRepository.createCategory(rid, name.trim(), st, count + 1, trx);
+        return { id, sortOrder: count + 1 };
+      });
+      broadcastRestaurantEvent(rid, 'menu:updated', { categoryId: created.id });
+      return { id: created.id, restaurantId: rid, name: name.trim(), station: st, sortOrder: created.sortOrder, active: true };
+    }
     const count = restaurantRepository.countCategories(rid);
     const id = restaurantRepository.createCategory(
       rid,
@@ -246,12 +266,22 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     };
   }
 
-  updateCategory(rid: string, categoryId: string, body: Record<string, unknown>) {
-    const existing = restaurantRepository.findCategory(categoryId, rid);
-    if (!existing) {
-      throw new AppError(404, 'Catégorie introuvable.');
-    }
+  async updateCategory(rid: string, categoryId: string, body: Record<string, unknown>) {
     const { name, station, sortOrder, active } = body || {};
+    if (usesPostgresRepositories()) {
+      const existing = await knexRestaurantStockRepository.findCategory(categoryId, rid);
+      if (!existing) throw new AppError(404, 'Catégorie introuvable.');
+      await knexRestaurantStockRepository.updateCategory(categoryId, rid, {
+        name: typeof name === 'string' ? name.trim() : undefined,
+        station: station === 'BAR' ? 'BAR' : station === 'KITCHEN' ? 'KITCHEN' : undefined,
+        sortOrder: sortOrder !== undefined && Number.isFinite(Number(sortOrder)) ? Math.max(0, Math.round(Number(sortOrder))) : undefined,
+        active: typeof active === 'boolean' ? active : undefined,
+      });
+      broadcastRestaurantEvent(rid, 'menu:updated', { categoryId });
+      return;
+    }
+    const existing = restaurantRepository.findCategory(categoryId, rid);
+    if (!existing) throw new AppError(404, 'Catégorie introuvable.');
     if (name !== undefined && (typeof name !== 'string' || name.trim().length < 2)) {
       throw new AppError(400, 'Nom de catégorie invalide.');
     }
@@ -267,8 +297,26 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'menu:updated', { categoryId });
   }
 
-  deleteCategory(auth: AuthContext, categoryId: string) {
+  async deleteCategory(auth: AuthContext, categoryId: string) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const existing = await knexRestaurantStockRepository.findCategory(categoryId, rid, trx);
+        if (!existing) throw new AppError(404, 'Catégorie introuvable.');
+        const itemsCount = await knexRestaurantStockRepository.countItemsInCategory(categoryId, rid, trx);
+        if (itemsCount > 0) throw new AppError(409, `Impossible de supprimer cette catégorie : elle contient encore ${itemsCount} article(s). Déplacez ou supprimez ces articles d’abord.`);
+        const deleted = await knexRestaurantStockRepository.deleteCategory(categoryId, rid, trx);
+        if (!deleted) throw new AppError(404, 'Catégorie introuvable.');
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'MENU_CATEGORY_DELETED', targetType: 'MENU_CATEGORY',
+          targetId: categoryId, details: String(existing.name),
+        });
+      });
+      broadcastRestaurantEvent(rid, 'menu:updated', { categoryId });
+      return;
+    }
     const existing = restaurantRepository.findCategory(categoryId, rid);
     if (!existing) {
       throw new AppError(404, 'Catégorie introuvable.');
@@ -350,7 +398,7 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       );
   }
 
-  createMenuItem(auth: AuthContext, body: Record<string, unknown>) {
+  async createMenuItem(auth: AuthContext, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const {
       categoryId,
@@ -374,11 +422,33 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       throw new AppError(400, 'Données du produit invalides.');
     }
 
-    const cat = restaurantRepository.findCategory(categoryId, rid);
-    if (!cat) {
-      throw new AppError(404, 'Catégorie introuvable.');
+    if (usesPostgresRepositories()) {
+      const sanitizedImageUrl = this.sanitizeMenuItemImageUrl(imageUrl);
+      const cleanOptions = this.sanitizeMenuOptions(options);
+      const cleanOptionGroups = sanitizeOptionGroups(optionGroups);
+      const roundedPrice = Math.round(Number(priceXof));
+      const parsedSortOrder = Number.isFinite(Number(sortOrder)) ? Math.max(0, Math.round(Number(sortOrder))) : 99;
+      const id = await getKnex().transaction(async (trx) => {
+        const createdId = await knexRestaurantStockRepository.createMenuItem({
+          rid, categoryId, name: name.trim(), description: String(description || '').trim(),
+          priceXof: roundedPrice, costPriceXof: Math.max(0, Math.round(Number(costPriceXof || 0))),
+          imageUrl: sanitizedImageUrl, available: typeof available === 'boolean' ? available : true,
+          sortOrder: parsedSortOrder, optionsJson: JSON.stringify(cleanOptions),
+          optionGroupsJson: JSON.stringify(cleanOptionGroups),
+        }, trx);
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'MENU_ITEM_CREATED', targetType: 'MENU_ITEM',
+          targetId: createdId, details: `${name.trim()} (${roundedPrice} FCFA)`,
+        });
+        return createdId;
+      });
+      broadcastRestaurantEvent(rid, 'menu:updated', { itemId: id });
+      return id;
     }
-
+    const cat = restaurantRepository.findCategory(categoryId, rid);
+    if (!cat) throw new AppError(404, 'Catégorie introuvable.');
     const sanitizedImageUrl = this.sanitizeMenuItemImageUrl(imageUrl);
     const cleanOptions = this.sanitizeMenuOptions(options);
     const cleanOptionGroups = sanitizeOptionGroups(optionGroups);
@@ -416,12 +486,29 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     return id;
   }
 
-  updateMenuItem(rid: string, itemId: string, body: Record<string, unknown>) {
-    const existing = restaurantRepository.findMenuItemById(itemId, rid);
-    if (!existing) {
-      throw new AppError(404, 'Article introuvable.');
+  async updateMenuItem(rid: string, itemId: string, body: Record<string, unknown>) {
+    if (usesPostgresRepositories()) {
+      const existing = await knexRestaurantStockRepository.findMenuItemById(itemId, rid);
+      if (!existing) throw new AppError(404, 'Article introuvable.');
+      const { categoryId, available, priceXof, costPriceXof, name, description, imageUrl, sortOrder, options, optionGroups } = body || {};
+      const hasImageUrl = Object.prototype.hasOwnProperty.call(body || {}, 'imageUrl');
+      await knexRestaurantStockRepository.updateMenuItem(itemId, rid, {
+        categoryId: typeof categoryId === 'string' && categoryId.trim() ? categoryId.trim() : undefined,
+        available: typeof available === 'boolean' ? available : undefined,
+        priceXof: priceXof !== undefined && Number.isFinite(Number(priceXof)) && Number(priceXof) >= 0 ? Math.round(Number(priceXof)) : undefined,
+        costPriceXof: costPriceXof !== undefined && Number.isFinite(Number(costPriceXof)) && Number(costPriceXof) >= 0 ? Math.round(Number(costPriceXof)) : undefined,
+        name: typeof name === 'string' && name.trim().length >= 2 ? name.trim() : undefined,
+        description: typeof description === 'string' ? description.trim() : undefined,
+        imageUrl: hasImageUrl ? this.sanitizeMenuItemImageUrl(imageUrl) : undefined,
+        sortOrder: sortOrder !== undefined && Number.isFinite(Number(sortOrder)) ? Math.max(0, Math.round(Number(sortOrder))) : undefined,
+        optionsJson: Array.isArray(options) ? JSON.stringify(this.sanitizeMenuOptions(options)) : undefined,
+        optionGroupsJson: Array.isArray(optionGroups) ? JSON.stringify(sanitizeOptionGroups(optionGroups)) : undefined,
+      });
+      broadcastRestaurantEvent(rid, 'menu:updated', { itemId });
+      return;
     }
-
+    const existing = restaurantRepository.findMenuItemById(itemId, rid);
+    if (!existing) throw new AppError(404, 'Article introuvable.');
     const {
       categoryId,
       available,
@@ -488,8 +575,26 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
     broadcastRestaurantEvent(rid, 'menu:updated', { itemId });
   }
 
-  deleteMenuItem(auth: AuthContext, itemId: string) {
+  async deleteMenuItem(auth: AuthContext, itemId: string) {
     const rid = auth.restaurantId!;
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const existing = await knexRestaurantStockRepository.findMenuItemById(itemId, rid, trx);
+        if (!existing) throw new AppError(404, 'Article introuvable.');
+        const refCount = await knexRestaurantStockRepository.countOrderReferencesForMenuItem(itemId, rid, trx);
+        if (refCount > 0) throw new AppError(409, 'Cet article est lié à des commandes existantes ; désactivez sa disponibilité plutôt que de le supprimer.');
+        const deleted = await knexRestaurantStockRepository.deleteMenuItem(itemId, rid, trx);
+        if (!deleted) throw new AppError(404, 'Article introuvable.');
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: rid,
+          action: 'MENU_ITEM_DELETED', targetType: 'MENU_ITEM',
+          targetId: itemId, details: String(existing.name),
+        });
+      });
+      broadcastRestaurantEvent(rid, 'menu:updated', { itemId });
+      return;
+    }
     const existing = restaurantRepository.findMenuItemById(itemId, rid);
     if (!existing) {
       throw new AppError(404, 'Article introuvable.');
