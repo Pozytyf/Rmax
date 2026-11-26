@@ -50,6 +50,8 @@ async function main(): Promise<void> {
           '{}'::jsonb
         );
       $jwt$;
+      GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
+      GRANT EXECUTE ON FUNCTION auth.jwt() TO anon, authenticated, service_role;
     `);
 
     for (const file of migrationFiles) {
