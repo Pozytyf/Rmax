@@ -779,6 +779,135 @@ export class KnexOperationsReadRepository {
     return rows.map((row) => this.mapB2bInvoiceRow(row));
   }
 
+  async createBranchVenue(
+    trx: Knex.Transaction,
+    params: {
+      sourceRestaurantId: string; restaurantId: string; name: string; slug: string;
+      email: string; phone: string; address: string; city: string;
+      ownerUserId: string; planId: string | null; trialEndsAt: string; now: string;
+    },
+  ): Promise<void> {
+    const owner = await trx('restaurant_members')
+      .where({
+        restaurant_id: params.sourceRestaurantId,
+        user_id: params.ownerUserId, role: 'OWNER', status: 'ACTIVE',
+      })
+      .forUpdate().first();
+    if (!owner) throw new AppError(403, 'Le compte ne possède pas les droits de propriétaire sur cet établissement.');
+    const user = await trx('users').select('id').where({ id: params.ownerUserId, status: 'ACTIVE' }).first();
+    if (!user) throw new AppError(403, 'Compte propriétaire inactif.');
+    await trx('tenants').insert({
+      id: params.restaurantId, name: params.name, slug: params.slug,
+      email: params.email, phone: params.phone, address: params.address,
+      city: params.city, country: "Côte d'Ivoire", currency: 'XOF',
+      timezone: 'Africa/Abidjan', status: 'ACTIVE', created_at: params.now,
+    });
+    await trx('restaurants').insert({
+      id: params.restaurantId, name: params.name, slug: params.slug,
+      email: params.email, phone: params.phone, address: params.address,
+      city: params.city, country: "Côte d'Ivoire", currency: 'XOF',
+      timezone: 'Africa/Abidjan', status: 'ACTIVE', created_at: params.now,
+    });
+    await trx('restaurant_members').insert({
+      id: this.id('mem'), restaurant_id: params.restaurantId,
+      user_id: params.ownerUserId, role: 'OWNER',
+      custom_permissions_json: '[]', status: 'ACTIVE', created_at: params.now,
+    });
+    if (params.planId) {
+      await trx('subscriptions').insert({
+        id: this.id('sub'), restaurant_id: params.restaurantId,
+        plan_id: params.planId, billing_cycle: 'MONTHLY',
+        status: 'ACTIVE', trial_ends_at: null,
+        current_period_start: params.now, current_period_end: params.trialEndsAt,
+        created_at: params.now,
+      });
+    }
+    await trx('menu_categories').insert([
+      { id: this.id('cat'), restaurant_id: params.restaurantId, name: 'Plats Principaux', station: 'KITCHEN', sort_order: 1, active: 1 },
+      { id: this.id('cat'), restaurant_id: params.restaurantId, name: 'Boissons & Bar', station: 'BAR', sort_order: 2, active: 1 },
+    ]);
+    const tables: Array<Record<string, unknown>> = [];
+    const qrCodes: Array<Record<string, unknown>> = [];
+    for (let i = 1; i <= 4; i++) {
+      const tableId = this.id('tbl');
+      tables.push({
+        id: tableId, restaurant_id: params.restaurantId,
+        zone: 'Salle principale', label: `Table 0${i}`, capacity: 4,
+        status: 'AVAILABLE', pos_x: 60 + ((i - 1) % 2) * 180,
+        pos_y: 60 + Math.floor((i - 1) / 2) * 160, shape: 'ROUND',
+      });
+      qrCodes.push({
+        id: this.id('qr'), restaurant_id: params.restaurantId,
+        table_id: tableId, token: `${params.slug}-t${i}-v1`,
+        version: 1, status: 'ACTIVE', created_at: params.now,
+      });
+    }
+    await trx('dining_tables').insert(tables);
+    await trx('qr_codes').insert(qrCodes);
+  }
+
+  async findConsolidatedOverview(userId: string) {
+    const venues = await this.db('restaurant_members as rm')
+      .join('restaurants as r', 'r.id', 'rm.restaurant_id')
+      .select({
+        restaurantId: 'r.id', name: 'r.name', slug: 'r.slug',
+        city: 'r.city', status: 'r.status', role: 'rm.role',
+      })
+      .where('rm.user_id', userId)
+      .where('rm.status', 'ACTIVE')
+      .whereIn('rm.role', ['OWNER', 'MANAGER'])
+      .whereNull('r.deleted_at')
+      .whereNot('r.status', 'DELETED')
+      .orderBy('rm.created_at', 'asc');
+    if (!venues.length) {
+      return {
+        totals: { venuesCount: 0, totalRevenueXof: 0, totalOrdersCount: 0, totalLowStocksCount: 0 },
+        venues: [],
+      };
+    }
+    const ids = venues.map((v) => String(v.restaurantId));
+    const [revenueRows, tableRows, stockRows] = await Promise.all([
+      this.db('orders').select('restaurant_id')
+        .sum({ totalRevenueXof: 'total_xof' }).count({ ordersCount: '*' })
+        .whereIn('restaurant_id', ids).whereNot('status', 'CANCELLED').groupBy('restaurant_id'),
+      this.db('dining_tables').select('restaurant_id')
+        .count({ totalTables: '*' })
+        .sum({ occupiedTables: this.db.raw("CASE WHEN status = 'OCCUPIED' THEN 1 ELSE 0 END") })
+        .whereIn('restaurant_id', ids).groupBy('restaurant_id'),
+      this.db('stocks').select('restaurant_id')
+        .count({ lowStocksCount: '*' })
+        .whereRaw('quantity <= min_threshold')
+        .whereIn('restaurant_id', ids).groupBy('restaurant_id'),
+    ]);
+    const byId = <T extends { restaurant_id: string }>(rows: T[]) =>
+      new Map(rows.map((row) => [String(row.restaurant_id), row]));
+    const revenues = byId(revenueRows);
+    const tables = byId(tableRows);
+    const stocks = byId(stockRows);
+    const result = venues.map((venue) => {
+      const revenue = revenues.get(String(venue.restaurantId));
+      const table = tables.get(String(venue.restaurantId));
+      const stock = stocks.get(String(venue.restaurantId));
+      return {
+        ...venue,
+        totalRevenueXof: Number(revenue?.totalRevenueXof || 0),
+        ordersCount: Number(revenue?.ordersCount || 0),
+        totalTables: Number(table?.totalTables || 0),
+        occupiedTables: Number(table?.occupiedTables || 0),
+        lowStocksCount: Number(stock?.lowStocksCount || 0),
+      };
+    });
+    return {
+      totals: {
+        venuesCount: result.length,
+        totalRevenueXof: result.reduce((sum, venue) => sum + venue.totalRevenueXof, 0),
+        totalOrdersCount: result.reduce((sum, venue) => sum + venue.ordersCount, 0),
+        totalLowStocksCount: result.reduce((sum, venue) => sum + venue.lowStocksCount, 0),
+      },
+      venues: result,
+    };
+  }
+
   async findPromotions(rid: string): Promise<Promotion[]> {
     const rows = await this.db('promotions')
       .where({ restaurant_id: rid })
