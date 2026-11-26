@@ -4,24 +4,24 @@ import { handleControllerError } from '../services/errors.ts';
 
 export const operationsController = {
   // Combos
-  listCombos(req: Request, res: Response) {
+  async listCombos(req: Request, res: Response) {
     try {
-      res.json({ combos: operationsService.listCombos(req.auth!.restaurantId!) });
+      res.json({ combos: await operationsService.listCombos(req.auth!.restaurantId!) });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement formules.');
     }
   },
-  createCombo(req: Request, res: Response) {
+  async createCombo(req: Request, res: Response) {
     try {
-      const combo = operationsService.createCombo(req.auth!, req.body || {});
+      const combo = await operationsService.createCombo(req.auth!, req.body || {});
       res.status(201).json({ combo });
     } catch (err) {
       handleControllerError(res, err, 'Erreur création formule.');
     }
   },
-  updateCombo(req: Request, res: Response) {
+  async updateCombo(req: Request, res: Response) {
     try {
-      const combo = operationsService.updateCombo(
+      const combo = await operationsService.updateCombo(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -31,9 +31,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur mise à jour formule.');
     }
   },
-  deleteCombo(req: Request, res: Response) {
+  async deleteCombo(req: Request, res: Response) {
     try {
-      operationsService.deleteCombo(req.auth!, String(req.params.id));
+      await operationsService.deleteCombo(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression formule.');
@@ -41,18 +41,18 @@ export const operationsController = {
   },
 
   // Promotions & Happy Hour
-  listPromotions(req: Request, res: Response) {
+  async listPromotions(req: Request, res: Response) {
     try {
       res.json({
-        promotions: operationsService.listPromotions(req.auth!.restaurantId!),
+        promotions: await operationsService.listPromotions(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement promotions.');
     }
   },
-  createPromotion(req: Request, res: Response) {
+  async createPromotion(req: Request, res: Response) {
     try {
-      const promotion = operationsService.createPromotion(
+      const promotion = await operationsService.createPromotion(
         req.auth!,
         req.body || {},
       );
@@ -61,9 +61,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur création promotion.');
     }
   },
-  updatePromotion(req: Request, res: Response) {
+  async updatePromotion(req: Request, res: Response) {
     try {
-      operationsService.updatePromotion(
+      await operationsService.updatePromotion(
         req.auth!,
         String(req.params.id),
         req.body || {},
@@ -73,9 +73,9 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur mise à jour promotion.');
     }
   },
-  deletePromotion(req: Request, res: Response) {
+  async deletePromotion(req: Request, res: Response) {
     try {
-      operationsService.deletePromotion(req.auth!, String(req.params.id));
+      await operationsService.deletePromotion(req.auth!, String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       handleControllerError(res, err, 'Erreur suppression promotion.');
