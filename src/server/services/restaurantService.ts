@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { getDb, generateId } from '../db.ts';
 import { type AuthContext, recordAudit, recordAuditWithKnex } from '../auth.ts';
