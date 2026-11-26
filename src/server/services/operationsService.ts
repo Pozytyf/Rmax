@@ -933,14 +933,6 @@ export class OperationsService extends BaseService<OperationsRepository> {
     }
     const nextQty = Math.round((Number(stock.quantity) - roundedDelta) * 1000) / 1000;
     const now = new Date().toISOString();
-    const labels: Record<string, string> = {
-      EXPIRED: 'Péremption',
-      BROKEN: 'Casse / Préparation ratée',
-      COMPLIMENTARY: 'Offert client / Dégustation',
-    };
-    const reasonText =
-      String(body?.reason || '').trim() || `Perte (${labels[cat]})`;
-
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare(
@@ -1575,15 +1567,6 @@ export class OperationsService extends BaseService<OperationsRepository> {
     }
 
     const db = getDb();
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-    const slug = `${slugBase || 'site'}-${Math.floor(1000 + Math.random() * 9000)}`;
-    const newRid = generateId('rest');
-    const now = new Date().toISOString();
-    const trialEnds = new Date(Date.now() + 14 * 86_400_000).toISOString();
 
     const plan = db
       .prepare('SELECT id FROM plans WHERE active = 1 ORDER BY price_monthly_xof ASC LIMIT 1')
