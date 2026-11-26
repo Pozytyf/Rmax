@@ -192,6 +192,7 @@ CREATE OR REPLACE FUNCTION public.current_tenant_id()
 RETURNS TEXT
 LANGUAGE sql
 STABLE
+SET search_path = pg_catalog
 AS $function$
   SELECT NULLIF(COALESCE(
     auth.jwt() ->> 'restaurant_id',

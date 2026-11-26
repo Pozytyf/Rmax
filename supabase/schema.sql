@@ -691,7 +691,8 @@ CREATE OR REPLACE FUNCTION public.current_tenant_id()
 RETURNS TEXT
 LANGUAGE sql
 STABLE
-AS $$
+SET search_path = pg_catalog
+AS $
   SELECT NULLIF(COALESCE(
     auth.jwt() ->> 'restaurant_id',
     auth.jwt() -> 'app_metadata' ->> 'restaurant_id',
@@ -703,7 +704,8 @@ CREATE OR REPLACE FUNCTION public.is_superadmin()
 RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
-AS $$
+SET search_path = pg_catalog
+AS $
   SELECT COALESCE(
     auth.jwt() ->> 'global_role',
     auth.jwt() -> 'app_metadata' ->> 'global_role',
