@@ -63,6 +63,7 @@ async function main(): Promise<void> {
       '202611260018_add_public_order_fields.sql',
       '202611260019_add_public_restaurant_settings.sql',
       '202611260020_seed_default_saas_plans.sql',
+      '202611260021_restaurant_order_counters.sql',
     ]) {
       const migrationPath = path.resolve(process.cwd(), 'supabase/migrations', migration);
       await client.query(await fs.readFile(migrationPath, 'utf8'));
@@ -121,6 +122,15 @@ async function main(): Promise<void> {
       "SELECT code FROM public.plans WHERE code IN ('ESSENTIEL', 'PROFESSIONNEL', 'PREMIUM')",
     );
     assert.equal(plans.rowCount, 3, 'Bootstrap schema is missing one or more default SaaS plans');
+
+    const counterTable = await client.query(
+      "SELECT to_regclass('public.restaurant_order_counters') AS table_name",
+    );
+    assert.ok(counterTable.rows[0]?.table_name, 'Bootstrap schema is missing restaurant_order_counters');
+    const counterPolicy = await client.query(
+      "SELECT count(*)::int AS count FROM pg_policies WHERE schemaname='public' AND tablename='restaurant_order_counters' AND policyname='deny_api_access_restaurant_order_counters'",
+    );
+    assert.equal(counterPolicy.rows[0]?.count, 1, 'Order counter must deny direct API access');
 
     const policies = await client.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM pg_policies WHERE schemaname = 'public'",
