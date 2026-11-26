@@ -285,7 +285,7 @@ export const operationsController = {
   },
 
   // Multi-Venue
-  createBranchVenue(req: Request, res: Response) {
+  async createBranchVenue(req: Request, res: Response) {
     try {
       const venue = operationsService.createBranchVenue(
         req.auth!,
@@ -296,7 +296,7 @@ export const operationsController = {
       handleControllerError(res, err, 'Erreur création établissement.');
     }
   },
-  getConsolidatedOverview(req: Request, res: Response) {
+  async getConsolidatedOverview(req: Request, res: Response) {
     try {
       res.json(operationsService.getConsolidatedOverview(req.auth!));
     } catch (err) {

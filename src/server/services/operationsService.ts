@@ -1527,7 +1527,7 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 10. Multi-Venue Branch Creation & Consolidated KPIs ──────────────────
-  createBranchVenue(auth: AuthContext, body: Record<string, unknown>) {
+  async createBranchVenue(auth: AuthContext, body: Record<string, unknown>) {
     if (auth.role !== 'OWNER') {
       throw new AppError(
         403,
@@ -1544,8 +1544,36 @@ export class OperationsService extends BaseService<OperationsRepository> {
       throw new AppError(400, 'Nom du nouvel établissement requis.');
     }
 
-    const db = getDb();
     const slugBase = name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\\u0300-\\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+    const slug = `${slugBase || 'site'}-${crypto.randomUUID().replace(/-/g, '').slice(0, 6)}`;
+    const newRid = generateId('rest');
+    const now = new Date().toISOString();
+    const trialEnds = new Date(Date.now() + 14 * 86_400_000).toISOString();
+    if (usesPostgresRepositories()) {
+      await getKnex().transaction(async (trx) => {
+        const plan = await trx('plans').select('id').where({ active: 1 }).orderBy('price_monthly_xof', 'asc').first();
+        await knexOperationsReadRepository.createBranchVenue(trx, {
+          sourceRestaurantId: auth.restaurantId!, restaurantId: newRid,
+          name, slug, email: auth.email, phone, address, city,
+          ownerUserId: auth.userId, planId: plan ? String(plan.id) : null,
+          trialEndsAt: trialEnds, now,
+        });
+        await recordAuditWithKnex(trx, {
+          actorUserId: auth.userId, actorEmail: auth.email,
+          actorRole: auth.role, restaurantId: newRid,
+          action: 'BRANCH_VENUE_CREATED', targetType: 'RESTAURANT',
+          targetId: newRid, details: `Nouveau point de vente rattaché : ${name} (${city})`,
+        });
+      });
+      return { restaurantId: newRid, name, slug, city, status: 'ACTIVE', role: 'OWNER' };
+    }
+
+    const db = getDb();
       .toLowerCase()
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
@@ -1630,7 +1658,10 @@ export class OperationsService extends BaseService<OperationsRepository> {
     };
   }
 
-  getConsolidatedOverview(auth: AuthContext) {
+  async getConsolidatedOverview(auth: AuthContext) {
+    if (usesPostgresRepositories()) {
+      return knexOperationsReadRepository.findConsolidatedOverview(auth.userId);
+    }
     const db = getDb();
     const venues = db
       .prepare(
