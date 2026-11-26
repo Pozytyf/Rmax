@@ -1165,7 +1165,7 @@ export class SuperadminService extends BaseService<SuperadminRepository> {
         ? body.recipient.trim().toLowerCase()
         : auth.email;
 
-    const smtpConfig = resolvePlatformSmtpConfig();
+    const smtpConfig = await resolvePlatformSmtpConfig();
 
     return sendSmtpTestEmail({
       restaurantName: "Plateforme Resto'MAX",
