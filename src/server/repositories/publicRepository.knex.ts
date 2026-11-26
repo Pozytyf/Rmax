@@ -138,7 +138,7 @@ export class KnexPublicRepository {
       .join('dining_tables as t', 't.id', 'o.table_id')
       .join('restaurants as r', 'r.id', 'o.restaurant_id')
       .select({
-        id: 'o.id', order_number: 'o.order_number', order_type: 'o.order_type',
+        id: 'o.id', restaurant_id: 'o.restaurant_id', order_number: 'o.order_number', order_type: 'o.order_type',
         status: 'o.status', discount_xof: 'o.discount_xof', total_xof: 'o.total_xof',
         paid_xof: 'o.paid_xof', notes: 'o.notes', customer_name: 'o.customer_name',
         customer_phone: 'o.customer_phone', promo_code: 'o.promo_code',
@@ -161,7 +161,7 @@ export class KnexPublicRepository {
     const order = await this.db('orders as o')
       .join('restaurants as r', 'r.id', 'o.restaurant_id')
       .select({
-        id: 'o.id', order_number: 'o.order_number', order_type: 'o.order_type',
+        id: 'o.id', restaurant_id: 'o.restaurant_id', order_number: 'o.order_number', order_type: 'o.order_type',
         status: 'o.status', discount_xof: 'o.discount_xof', total_xof: 'o.total_xof',
         paid_xof: 'o.paid_xof', notes: 'o.notes', customer_name: 'o.customer_name',
         customer_phone: 'o.customer_phone', delivery_address: 'o.delivery_address',
@@ -258,6 +258,76 @@ export class KnexPublicRepository {
         totalSpentXof: Number(customer.total_spent_xof || 0),
         visitsCount: Number(customer.visits_count || 0),
       } : null,
+    };
+  }
+
+  async createTableCall(params: {
+    restaurantId: string;
+    tableId: string;
+    tableLabel: string;
+    callType: 'WAITER' | 'BILL';
+    note: string;
+  }) {
+    const id = this.id('call');
+    const notificationId = this.id('ntf');
+    const now = new Date().toISOString();
+    await this.db.transaction(async (trx) => {
+      await trx('table_calls').insert({
+        id, restaurant_id: params.restaurantId, table_id: params.tableId,
+        table_label: params.tableLabel, call_type: params.callType,
+        note: params.note, status: 'PENDING', created_at: now,
+      });
+      await trx('notifications').insert({
+        id: notificationId, restaurant_id: params.restaurantId,
+        type: params.callType === 'BILL' ? 'TABLE_BILL_REQUEST' : 'TABLE_WAITER_CALL',
+        title: params.callType === 'BILL'
+          ? `Demande d’addition · ${params.tableLabel}`
+          : `Appel serveur · ${params.tableLabel}`,
+        message: params.note || `La table ${params.tableLabel} demande votre présence.`,
+        stock_id: null, email_dispatched: 0, email_recipients: '',
+        email_status: 'SKIPPED', is_read: 0, created_at: now,
+      });
+    });
+    return {
+      id, restaurantId: params.restaurantId, tableId: params.tableId,
+      tableLabel: params.tableLabel, callType: params.callType,
+      note: params.note, status: 'PENDING' as const, createdAt: now,
+    };
+  }
+
+  async insertCustomerReview(params: {
+    restaurantId: string;
+    orderId: string | null;
+    orderNumber: string;
+    tableLabel: string;
+    customerName: string;
+    rating: number;
+    serviceRating: number;
+    foodRating: number;
+    speedRating: number;
+    waiterName: string;
+    channel: string;
+    comment: string;
+  }) {
+    const id = this.id('rev');
+    const now = new Date().toISOString();
+    await this.db('customer_reviews').insert({
+      id, restaurant_id: params.restaurantId, order_id: params.orderId,
+      order_number: params.orderNumber, table_label: params.tableLabel,
+      customer_name: params.customerName, rating: params.rating,
+      service_rating: params.serviceRating, food_rating: params.foodRating,
+      speed_rating: params.speedRating, waiter_name: params.waiterName,
+      channel: params.channel, comment: params.comment, reply: '',
+      created_at: now,
+    });
+    return {
+      id, restaurantId: params.restaurantId, orderId: params.orderId,
+      orderNumber: params.orderNumber, tableLabel: params.tableLabel,
+      customerName: params.customerName, rating: params.rating,
+      serviceRating: params.serviceRating, foodRating: params.foodRating,
+      speedRating: params.speedRating, waiterName: params.waiterName,
+      channel: params.channel, comment: params.comment, reply: '',
+      createdAt: now,
     };
   }
 
