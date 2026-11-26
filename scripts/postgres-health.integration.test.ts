@@ -25,5 +25,10 @@ test('selected PostgreSQL pool is reachable and schema is fully migrated', async
   ];
   for (const table of requiredOperationsTables) {
     assert.equal(await db.schema.hasTable(table), true, `Missing PostgreSQL table: ${table}`);
+    const rls = await db.raw(
+      'SELECT relrowsecurity FROM pg_class WHERE oid = ?::regclass',
+      [table],
+    );
+    assert.equal(rls.rows[0]?.relrowsecurity, true, `RLS is disabled on ${table}`);
   }
 });

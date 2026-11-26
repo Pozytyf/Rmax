@@ -212,6 +212,27 @@ export async function up(knex: Knex): Promise<void> {
       t.index(['restaurant_id', 'created_at'], 'idx_b2b_invoices_restaurant_created');
     });
   }
+
+  // Explicitly enable RLS on every newly introduced tenant-owned table.
+  // No permissive client policies are created until the browser has a trusted
+  // Supabase JWT carrying the authenticated restaurant claim.
+  if (knex.client.config.client === 'pg') {
+    for (const table of [
+      'menu_combos',
+      'promotions',
+      'cash_register_sessions',
+      'table_calls',
+      'loyalty_transactions',
+      'customer_reviews',
+      'inventory_counts',
+      'inventory_count_lines',
+      'staff_shifts',
+      'staff_time_clocks',
+      'b2b_invoices',
+    ]) {
+      await knex.raw('ALTER TABLE ?? ENABLE ROW LEVEL SECURITY', [table]);
+    }
+  }
 }
 
 export async function down(knex: Knex): Promise<void> {
