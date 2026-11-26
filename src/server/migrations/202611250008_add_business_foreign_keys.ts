@@ -68,7 +68,7 @@ const foreignKeys: Array<{
   { table: 'loyalty_transactions', name: 'fk_loyalty_transactions_customer', column: 'customer_id', target: 'customers', onDelete: 'CASCADE' },
   { table: 'loyalty_transactions', name: 'fk_loyalty_transactions_order', column: 'order_id', target: 'orders', onDelete: 'SET NULL' },
   { table: 'customer_reviews', name: 'fk_customer_reviews_restaurant', column: 'restaurant_id', target: 'restaurants', onDelete: 'CASCADE' },
-  { table: 'customer_reviews', name: 'fk_customer_reviews_order', column: 'order_id', target: 'orders', onDelete: 'SET NULL' },
+  { table: 'customer_reviews', name: 'fk_customer_reviews_order', column: 'order_id', target: 'orders', onDelete: 'CASCADE' },
   { table: 'inventory_counts', name: 'fk_inventory_counts_restaurant', column: 'restaurant_id', target: 'restaurants', onDelete: 'CASCADE' },
   { table: 'inventory_count_lines', name: 'fk_inventory_count_lines_count', column: 'inventory_count_id', target: 'inventory_counts', onDelete: 'CASCADE' },
   { table: 'inventory_count_lines', name: 'fk_inventory_count_lines_stock', column: 'stock_id', target: 'stocks' },
@@ -96,9 +96,21 @@ export async function up(knex: Knex): Promise<void> {
     }
 
     const existing = await knex.raw(
-      'SELECT 1 FROM pg_constraint WHERE conname = ? AND conrelid = ?::regclass LIMIT 1',
-      [fk.name, fk.table],
+      `SELECT 1
+       FROM pg_constraint c
+       JOIN pg_class target_table ON target_table.oid = c.confrelid
+       JOIN pg_attribute source_column
+         ON source_column.attrelid = c.conrelid
+        AND source_column.attnum = ANY(c.conkey)
+       WHERE c.contype = 'f'
+         AND c.conrelid = ?::regclass
+         AND source_column.attname = ?
+         AND target_table.relname = ?
+       LIMIT 1`,
+      [fk.table, fk.column, fk.target],
     );
+    // Several operation tables already declare these FKs in migration 007.
+    // Skip equivalent constraints rather than installing duplicates.
     if (existing.rows.length > 0) continue;
 
     const deleteClause = fk.onDelete ? ` ON DELETE ${fk.onDelete}` : '';
