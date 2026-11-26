@@ -432,6 +432,38 @@ export class KnexOperationsReadRepository {
     }));
   }
 
+  async createShift(params: {
+    restaurantId: string; userId: string; shiftDate: string;
+    startTime: string; endTime: string; notes: string;
+  }): Promise<StaffShift> {
+    const member = await this.db('restaurant_members as rm')
+      .join('users as u', 'u.id', 'rm.user_id')
+      .select({ fullName: 'u.full_name', role: 'rm.role' })
+      .where('rm.restaurant_id', params.restaurantId)
+      .where('rm.user_id', params.userId)
+      .where('rm.status', 'ACTIVE')
+      .where('u.status', 'ACTIVE')
+      .first();
+    if (!member) throw new AppError(404, 'Employé introuvable dans cet établissement.');
+    const id = this.id('shf');
+    const now = new Date().toISOString();
+    await this.db('staff_shifts').insert({
+      id, restaurant_id: params.restaurantId, user_id: params.userId,
+      staff_name: member.fullName, role: member.role,
+      shift_date: params.shiftDate, start_time: params.startTime,
+      end_time: params.endTime, notes: params.notes, created_at: now,
+    });
+    const created = (await this.findStaffShifts(params.restaurantId)).find((row) => row.id === id);
+    if (!created) throw new Error('Le créneau créé est introuvable.');
+    return created;
+  }
+
+  async deleteShift(restaurantId: string, shiftId: string): Promise<number> {
+    return this.db('staff_shifts')
+      .where({ id: shiftId, restaurant_id: restaurantId })
+      .del();
+  }
+
   async findStaffShifts(rid: string): Promise<StaffShift[]> {
     const rows = await this.db('staff_shifts')
       .select({
