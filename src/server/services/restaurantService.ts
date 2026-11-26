@@ -189,7 +189,9 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       if (!stockId || !Number.isFinite(qty) || qty <= 0) {
         continue;
       }
-      const stock = restaurantRepository.findStockById(stockId, rid);
+      const stock = usesPostgresRepositories()
+        ? await knexRestaurantStockRepository.findStockById(stockId, rid)
+        : restaurantRepository.findStockById(stockId, rid);
       if (!stock) {
         throw new AppError(404, 'Ingrédient introuvable pour cet établissement.');
       }
@@ -268,14 +270,19 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
 
   async updateCategory(rid: string, categoryId: string, body: Record<string, unknown>) {
     const { name, station, sortOrder, active } = body || {};
+    if (name !== undefined && (typeof name !== 'string' || name.trim().length < 2)) {
+      throw new AppError(400, 'Nom de catégorie invalide.');
+    }
     if (usesPostgresRepositories()) {
       const existing = await knexRestaurantStockRepository.findCategory(categoryId, rid);
       if (!existing) throw new AppError(404, 'Catégorie introuvable.');
-      await knexRestaurantStockRepository.updateCategory(categoryId, rid, {
-        name: typeof name === 'string' ? name.trim() : undefined,
-        station: station === 'BAR' ? 'BAR' : station === 'KITCHEN' ? 'KITCHEN' : undefined,
-        sortOrder: sortOrder !== undefined && Number.isFinite(Number(sortOrder)) ? Math.max(0, Math.round(Number(sortOrder))) : undefined,
-        active: typeof active === 'boolean' ? active : undefined,
+      await getKnex().transaction(async (trx) => {
+        await knexRestaurantStockRepository.updateCategory(categoryId, rid, {
+          name: typeof name === 'string' ? name.trim() : undefined,
+          station: station === 'BAR' ? 'BAR' : station === 'KITCHEN' ? 'KITCHEN' : undefined,
+          sortOrder: sortOrder !== undefined && Number.isFinite(Number(sortOrder)) ? Math.max(0, Math.round(Number(sortOrder))) : undefined,
+          active: typeof active === 'boolean' ? active : undefined,
+        }, trx);
       });
       broadcastRestaurantEvent(rid, 'menu:updated', { categoryId });
       return;
@@ -492,17 +499,19 @@ export class RestaurantService extends BaseService<RestaurantRepository> {
       if (!existing) throw new AppError(404, 'Article introuvable.');
       const { categoryId, available, priceXof, costPriceXof, name, description, imageUrl, sortOrder, options, optionGroups } = body || {};
       const hasImageUrl = Object.prototype.hasOwnProperty.call(body || {}, 'imageUrl');
-      await knexRestaurantStockRepository.updateMenuItem(itemId, rid, {
-        categoryId: typeof categoryId === 'string' && categoryId.trim() ? categoryId.trim() : undefined,
-        available: typeof available === 'boolean' ? available : undefined,
-        priceXof: priceXof !== undefined && Number.isFinite(Number(priceXof)) && Number(priceXof) >= 0 ? Math.round(Number(priceXof)) : undefined,
-        costPriceXof: costPriceXof !== undefined && Number.isFinite(Number(costPriceXof)) && Number(costPriceXof) >= 0 ? Math.round(Number(costPriceXof)) : undefined,
-        name: typeof name === 'string' && name.trim().length >= 2 ? name.trim() : undefined,
-        description: typeof description === 'string' ? description.trim() : undefined,
-        imageUrl: hasImageUrl ? this.sanitizeMenuItemImageUrl(imageUrl) : undefined,
-        sortOrder: sortOrder !== undefined && Number.isFinite(Number(sortOrder)) ? Math.max(0, Math.round(Number(sortOrder))) : undefined,
-        optionsJson: Array.isArray(options) ? JSON.stringify(this.sanitizeMenuOptions(options)) : undefined,
-        optionGroupsJson: Array.isArray(optionGroups) ? JSON.stringify(sanitizeOptionGroups(optionGroups)) : undefined,
+      await getKnex().transaction(async (trx) => {
+        await knexRestaurantStockRepository.updateMenuItem(itemId, rid, {
+          categoryId: typeof categoryId === 'string' && categoryId.trim() ? categoryId.trim() : undefined,
+          available: typeof available === 'boolean' ? available : undefined,
+          priceXof: priceXof !== undefined && Number.isFinite(Number(priceXof)) && Number(priceXof) >= 0 ? Math.round(Number(priceXof)) : undefined,
+          costPriceXof: costPriceXof !== undefined && Number.isFinite(Number(costPriceXof)) && Number(costPriceXof) >= 0 ? Math.round(Number(costPriceXof)) : undefined,
+          name: typeof name === 'string' && name.trim().length >= 2 ? name.trim() : undefined,
+          description: typeof description === 'string' ? description.trim() : undefined,
+          imageUrl: hasImageUrl ? this.sanitizeMenuItemImageUrl(imageUrl) : undefined,
+          sortOrder: sortOrder !== undefined && Number.isFinite(Number(sortOrder)) ? Math.max(0, Math.round(Number(sortOrder))) : undefined,
+          optionsJson: Array.isArray(options) ? JSON.stringify(this.sanitizeMenuOptions(options)) : undefined,
+          optionGroupsJson: Array.isArray(optionGroups) ? JSON.stringify(sanitizeOptionGroups(optionGroups)) : undefined,
+        }, trx);
       });
       broadcastRestaurantEvent(rid, 'menu:updated', { itemId });
       return;
