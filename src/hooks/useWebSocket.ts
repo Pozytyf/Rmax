@@ -13,6 +13,7 @@ export interface WsEventMessage {
 export function useWebSocketRoom(
   room: string | null,
   onEvent: (msg: WsEventMessage) => void,
+  publicAccessToken?: string,
 ) {
   const callbackRef = useRef(onEvent);
   callbackRef.current = onEvent;
@@ -146,8 +147,10 @@ export function useWebSocketRoom(
     const connect = () => {
       if (!active) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/ws?room=${encodeURIComponent(room)}`;
-      ws = new WebSocket(url);
+      const url = new URL(`${protocol}//${window.location.host}/ws`);
+      url.searchParams.set('room', room);
+      if (publicAccessToken) url.searchParams.set('qrToken', publicAccessToken);
+      ws = new WebSocket(url.toString());
 
       ws.onopen = () => {
         failCount = 0;
@@ -182,7 +185,7 @@ export function useWebSocketRoom(
       if (retryTimer) window.clearTimeout(retryTimer);
       if (ws) ws.close();
     };
-  }, [room]);
+  }, [room, publicAccessToken]);
 
   return { connected };
 }

@@ -201,6 +201,7 @@ export function QrOrderTrackingPage() {
   const { connected } = useWebSocketRoom(
     orderId ? `order:${orderId}` : null,
     () => load(false),
+    token,
   );
 
   useEffect(() => {

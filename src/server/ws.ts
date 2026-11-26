@@ -89,10 +89,10 @@ async function authorizeWebSocketRoom(
     if (auth?.role === 'SUPER_ADMIN') return true;
 
     if (auth?.restaurantId) {
-      const order = await getKnex()('orders')
-        .select('restaurant_id')
-        .where({ id: orderId })
-        .first();
+      const client = (process.env.DATABASE_CLIENT || 'sqlite').toLowerCase();
+      const order = process.env.NODE_ENV === 'test' && !['pg', 'postgres', 'postgresql'].includes(client)
+        ? getDb().prepare('SELECT restaurant_id FROM orders WHERE id = ?').get(orderId) as { restaurant_id: string } | undefined
+        : await getKnex()('orders').select('restaurant_id').where({ id: orderId }).first();
       if (order?.restaurant_id === auth.restaurantId) return true;
     }
 
