@@ -93,7 +93,57 @@ async function main(): Promise<void> {
       assert.ok(fn.proconfig?.includes('search_path=pg_catalog'));
     }
 
-    process.stdout.write('Supabase SQL migrations: 46 RLS policies, grants and function search_path verified.\\n');
+    // Exercise the actual RLS policy as the authenticated Data API role.
+    await client.query('BEGIN');
+    try {
+      await client.query(`
+        INSERT INTO public.restaurants (id, name, slug, email, created_at)
+        VALUES
+          ('rls_ci_rest_a', 'RLS CI A', 'rls-ci-a', 'rls-ci-a@example.invalid', '2026-11-26T00:00:00.000Z'),
+          ('rls_ci_rest_b', 'RLS CI B', 'rls-ci-b', 'rls-ci-b@example.invalid', '2026-11-26T00:00:00.000Z')
+      `);
+      await client.query(`
+        INSERT INTO public.orders (id, restaurant_id, order_number, order_type, subtotal_xof, total_xof, created_at, updated_at)
+        VALUES
+          ('rls_ci_order_a', 'rls_ci_rest_a', 'RLS-CI-A-001', 'DINE_IN', 100, 100, '2026-11-26T00:00:00.000Z', '2026-11-26T00:00:00.000Z'),
+          ('rls_ci_order_b', 'rls_ci_rest_b', 'RLS-CI-B-001', 'DINE_IN', 200, 200, '2026-11-26T00:00:00.000Z', '2026-11-26T00:00:00.000Z')
+      `);
+      await client.query('SET LOCAL ROLE authenticated');
+      await client.query(
+        "SELECT set_config('request.jwt.claims', $1, true)",
+        [JSON.stringify({ restaurant_id: 'rls_ci_rest_a' })],
+      );
+
+      const visibleOrders = await client.query<{ id: string; restaurant_id: string }>(
+        'SELECT id, restaurant_id FROM public.orders ORDER BY id',
+      );
+      assert.deepEqual(visibleOrders.rows, [
+        { id: 'rls_ci_order_a', restaurant_id: 'rls_ci_rest_a' },
+      ]);
+
+      const crossTenantUpdate = await client.query(
+        "UPDATE public.orders SET total_xof = 999 WHERE restaurant_id = 'rls_ci_rest_b'",
+      );
+      assert.equal(crossTenantUpdate.rowCount, 0);
+
+      await client.query('SAVEPOINT cross_tenant_insert');
+      await assert.rejects(
+        () => client.query(`
+          INSERT INTO public.orders (id, restaurant_id, order_number, order_type, subtotal_xof, total_xof, created_at, updated_at)
+          VALUES ('rls_ci_order_forbidden', 'rls_ci_rest_b', 'RLS-CI-FORBIDDEN', 'DINE_IN', 300, 300, '2026-11-26T00:00:00.000Z', '2026-11-26T00:00:00.000Z')
+        `),
+        (error: unknown) =>
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          (error as { code?: string }).code === '42501',
+      );
+      await client.query('ROLLBACK TO SAVEPOINT cross_tenant_insert');
+    } finally {
+      await client.query('ROLLBACK');
+    }
+
+    process.stdout.write('Supabase SQL migrations: 46 RLS policies, grants, function search_path and cross-tenant denial verified.\\n');
   } finally {
     await client.end();
   }
