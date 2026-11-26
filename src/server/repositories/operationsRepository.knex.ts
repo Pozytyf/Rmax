@@ -166,8 +166,11 @@ export class KnexOperationsReadRepository {
     return rows.map((row) => this.mapRegisterRow(row));
   }
 
-  async computeRegisterLiveTotals(rid: string, sinceIso: string, openingFloatXof: number) {
-    const payRows = await this.db('payments')
+  async computeRegisterLiveTotals(
+    rid: string, sinceIso: string, openingFloatXof: number,
+    executor: Knex | Knex.Transaction = this.db,
+  ) {
+    const payRows = await executor('payments')
       .where({ restaurant_id: rid })
       .where('created_at', '>=', sinceIso)
       .select('method', 'status')
@@ -190,7 +193,7 @@ export class KnexOperationsReadRepository {
       else if (row.method === 'CARD') cardSales += amount;
       else mobileSales += amount;
     }
-    const ordersRow = await this.db('orders')
+    const ordersRow = await executor('orders')
       .where({ restaurant_id: rid })
       .where('created_at', '>=', sinceIso)
       .whereNot('status', 'CANCELLED')
@@ -204,6 +207,74 @@ export class KnexOperationsReadRepository {
       refundsXof: totalRefunds,
       ordersCount: Number(ordersRow?.c || 0),
     };
+  }
+
+
+  async findOpenRegisterForUpdate(trx: Knex.Transaction, rid: string): Promise<CashRegisterSession | null> {
+    const row = await trx('cash_register_sessions')
+      .where({ restaurant_id: rid, status: 'OPEN' })
+      .orderBy('opened_at', 'desc')
+      .forUpdate()
+      .first();
+    return row ? this.mapRegisterRow(row) : null;
+  }
+
+  async openRegisterSession(
+    trx: Knex.Transaction,
+    params: { rid: string; userId: string; userName: string; openingFloatXof: number; notes: string },
+  ): Promise<CashRegisterSession> {
+    await trx('restaurants').select('id').where({ id: params.rid }).forUpdate().first();
+    const existing = await trx('cash_register_sessions')
+      .where({ restaurant_id: params.rid, status: 'OPEN' })
+      .first();
+    if (existing) {
+      throw new AppError(409, 'Une caisse est déjà ouverte pour cet établissement.');
+    }
+    const id = this.id('reg');
+    const now = new Date().toISOString();
+    await trx('cash_register_sessions').insert({
+      id, restaurant_id: params.rid, z_number: '',
+      opened_by_user_id: params.userId, opened_by_name: params.userName,
+      opening_float_xof: params.openingFloatXof, opened_at: now,
+      status: 'OPEN', notes: params.notes,
+    });
+    const row = await trx('cash_register_sessions').where({ id, restaurant_id: params.rid }).first();
+    if (!row) throw new Error('La session de caisse créée est introuvable.');
+    return this.mapRegisterRow(row);
+  }
+
+  async closeRegisterSession(
+    trx: Knex.Transaction,
+    params: {
+      id: string; rid: string; zNumber: string; userId: string; userName: string;
+      expectedCashXof: number; expectedMobileXof: number; expectedCardXof: number;
+      countedCashXof: number; countedMobileXof: number; countedCardXof: number;
+      varianceXof: number; totalSalesXof: number; refundsXof: number;
+      ordersCount: number; notes: string;
+    },
+  ): Promise<CashRegisterSession> {
+    const updated = await trx('cash_register_sessions')
+      .where({ id: params.id, restaurant_id: params.rid, status: 'OPEN' })
+      .update({
+        status: 'CLOSED', z_number: params.zNumber,
+        closed_by_user_id: params.userId, closed_by_name: params.userName,
+        closed_at: new Date().toISOString(),
+        expected_cash_xof: params.expectedCashXof,
+        expected_mobile_xof: params.expectedMobileXof,
+        expected_card_xof: params.expectedCardXof,
+        counted_cash_xof: params.countedCashXof,
+        counted_mobile_xof: params.countedMobileXof,
+        counted_card_xof: params.countedCardXof,
+        variance_xof: params.varianceXof,
+        total_sales_xof: params.totalSalesXof,
+        refunds_xof: params.refundsXof,
+        orders_count: params.ordersCount, notes: params.notes,
+      });
+    if (updated !== 1) throw new AppError(409, 'La session de caisse a déjà été clôturée ou modifiée.');
+    const row = await trx('cash_register_sessions')
+      .where({ id: params.id, restaurant_id: params.rid }).first();
+    if (!row) throw new Error('La session de caisse clôturée est introuvable.');
+    return this.mapRegisterRow(row);
   }
 
   async findTableCalls(rid: string): Promise<TableCall[]> {
