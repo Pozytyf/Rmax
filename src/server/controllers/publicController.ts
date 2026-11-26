@@ -116,9 +116,9 @@ export const publicController = {
     }
   },
 
-  payQrOrder(req: Request, res: Response) {
+  async payQrOrder(req: Request, res: Response) {
     try {
-      const result = publicService.payQrOrder(
+      const result = await publicService.payQrOrder(
         String(req.params.token),
         String(req.params.orderId),
         req.body || {},
@@ -220,9 +220,9 @@ export const publicController = {
     }
   },
 
-  payStorefrontOrder(req: Request, res: Response) {
+  async payStorefrontOrder(req: Request, res: Response) {
     try {
-      const result = publicService.payStorefrontOrder(
+      const result = await publicService.payStorefrontOrder(
         String(req.params.slug),
         String(req.params.orderId),
         req.body || {},
