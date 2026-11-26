@@ -127,6 +127,10 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(schemaSql.includes('trg_restaurants_sync_tenant'), true);
   assert.equal(schemaSql.includes('tenant_isolation_inventory_count_lines'), true);
   assert.equal(schemaSql.includes('ALTER TABLE public.inventory_count_lines ENABLE ROW LEVEL SECURITY'), true);
+  assert.equal(schemaSql.includes('SET search_path = pg_catalog'), true);
+  assert.equal(schemaSql.includes('tenant_self_access_restaurants'), true);
+  assert.equal(schemaSql.includes('tenant_isolation_order_items'), true);
+  assert.equal(schemaSql.includes('REVOKE ALL ON TABLE public.users FROM anon, authenticated'), true);
 
   const coreMigrationPath = path.resolve(
     process.cwd(),
@@ -191,6 +195,16 @@ test('3. Supabase schema.sql & seed.sql contain all multi-tenant tables, RLS, an
   assert.equal(fs.existsSync(revokeMigrationPath), true);
   const revokeMigrationSql = fs.readFileSync(revokeMigrationPath, 'utf8');
   assert.equal(revokeMigrationSql.includes('REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM PUBLIC'), true);
+
+  const tenantRlsMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/202611260013_apply_existing_tenant_rls.sql',
+  );
+  assert.equal(fs.existsSync(tenantRlsMigrationPath), true);
+  const tenantRlsMigrationSql = fs.readFileSync(tenantRlsMigrationPath, 'utf8');
+  assert.equal(tenantRlsMigrationSql.includes('tenant_isolation_order_items'), true);
+  assert.equal(tenantRlsMigrationSql.includes('REVOKE ALL ON TABLE public.users FROM anon, authenticated'), true);
+  assert.equal(tenantRlsMigrationSql.includes('CREATE POLICY tenant_isolation_orders'), true);
 
   const seedSql = fs.readFileSync(seedPath, 'utf8');
   assert.equal(seedSql.includes('rest_sillage_01'), true);
