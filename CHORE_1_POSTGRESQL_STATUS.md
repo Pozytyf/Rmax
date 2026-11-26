@@ -2,12 +2,12 @@
 
 Branche de travail : `fix/chore-1-postgresql-persistence`
 Merge request : !1 (Draft)
-Dernier pipeline complet validé : [3117589123](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117589123)
+Dernier pipeline complet validé : [3117648302](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117648302)
 
 ## Chantier 1 — PostgreSQL et persistance
 
 ### État
-Fondations de configuration, migrations, intégrité de schéma et CI validées. **Migration des repositories métier vers PostgreSQL non terminée**. Ce chantier n'est donc pas clos et la branche n'est pas déployable en production.
+Fondations de configuration, migrations, intégrité de schéma, CI et parcours d'authentification PostgreSQL validés. **Migration des repositories métier reste incomplète** : commandes, QR/storefront, stocks, opérations et superadmin utilisent encore en partie SQLite. Ce chantier n'est donc pas clos et la branche n'est pas déployable en production.
 
 ### Diagnostic confirmé
 - `src/server/db.ts` et les repositories historiques utilisent encore `better-sqlite3` et des appels synchrones.
@@ -25,6 +25,13 @@ Fondations de configuration, migrations, intégrité de schéma et CI validées.
 - Les erreurs de migrations ne sont plus ignorées.
 - Vérification des certificats TLS activée.
 - Les migrations sont sorties du démarrage de chaque instance production/serverless ; le runtime vérifie leur état. Les migrations locales restent automatiques en développement.
+- Migration du parcours d'authentification vers `KnexAuthRepository` asynchrone en production : connexion, inscription, sessions, bascule de restaurant, PIN, vérification email, reset/changement de mot de passe et révocation.
+- Ajout de `recordAuditWithKnex` et `resolveAuthContextWithKnex`; les middlewares d'authentification et la vérification des sessions passent par PostgreSQL en production.
+- Les changements de mot de passe et la consommation des jetons de vérification/reset sont transactionnels et verrouillés contre la réutilisation concurrente.
+- La création d'un restaurant crée aussi la ligne `tenants` requise par la FK `users.tenant_id`.
+- Ajout de la migration Knex `202611260015_seed_default_saas_plans.ts` : les plans Essentiel, Professionnel et Premium existent dès l'initialisation PostgreSQL, sans créer de restaurants ou comptes de démonstration.
+- `JWT_SECRET` est désormais obligatoire en production et doit faire au moins 32 octets ; les tokens sont vérifiés avec l'algorithme HS256 explicitement.
+- Les salles WebSocket de commande exigent soit une session restaurant autorisée, soit un QR actif lié à la même table que la commande. Le navigateur QR transmet son jeton de table pour l'accès public limité.
 - Le health check réutilise le pool Knex de l'application.
 - Ajout des 11 tables opérationnelles manquantes.
 - RLS activé explicitement sur les nouvelles tables métier, avec politiques tenant basées sur des claims vérifiés et sans accès métier anonyme.
@@ -37,22 +44,24 @@ Fondations de configuration, migrations, intégrité de schéma et CI validées.
 - Ajout de tests pour les règles de configuration, le verrou de migrations, la présence des tables, RLS, clés étrangères et unicité des numéros de commande.
 
 ### Validation réelle GitLab
-Pipeline [3117589123](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117589123) : **succès sur les six jobs**.
+Pipeline [3117648302](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117648302) : **succès sur les 7 jobs**.
 - `tsc --noEmit` : succès.
 - Tests ciblés de configuration : succès.
-- Suite complète actuelle : 81 tests réussis, 0 échec.
-- Migrations sur PostgreSQL 16 : migrations 001 à 009 appliquées, état sans migration en attente, rollback complet du batch puis réapplication réussie.
+- Suite complète : **78 tests sur 15 fichiers, 0 échec**.
+- Migrations sur PostgreSQL 16 : migrations Knex 001 à 009 et 015 appliquées ; état sans migration en attente ; rollback complet du batch puis réapplication réussie.
 - Smoke test PostgreSQL : connexion, schéma, RLS sur les 11 nouvelles tables, clés étrangères et index unique vérifiés.
+- Test d'intégration PostgreSQL du repository d'authentification : création tenant/restaurant/utilisateur/membership/session, lecture utilisateur/venues, token à usage unique, résolution JWT, révocation de session et audit vérifiés.
 - Test SQL Supabase : 46 politiques, privilèges, search_path et lecture/écriture inter-tenant refusées vérifiés sur PostgreSQL 16.
+- Test de bootstrap Supabase : schéma initial + migrations SQL 011 à 014, 46 politiques et grants vérifiés.
 - Build Vite/PWA : succès.
 
 Le build signale encore un bundle frontend principal supérieur à 700 kB ; c'est une optimisation de performance à traiter dans le chantier UX/performance.
 
 ### Inventaire des accès SQLite
-Le relevé statique compte encore 281 appels `getDb()`, 435 appels `.prepare()` et 81 appels `.exec()` dans les repositories, le middleware et les services. Le détail par fichier et l'ordre de conversion sont consignés dans `DB_MIGRATION_INVENTORY.md`.
+Le relevé statique initial comptait 281 appels `getDb()`, 435 appels `.prepare()` et 81 appels `.exec()` dans les repositories, le middleware et les services. L'authentification a été partiellement sortie de ces chemins, mais le reste des repositories métier n'est pas encore migré. Le détail par fichier et l'ordre de conversion sont consignés dans `DB_MIGRATION_INVENTORY.md`.
 
 ### Travaux bloquants avant clôture
-1. Migrer les repositories `authRepository`, `publicRepository`, `restaurantRepository`, `operationsRepository`, `superadminRepository` et `BaseRepository` vers un accès Knex asynchrone.
+1. Terminer le retrait du repository SQLite historique `authRepository` pour les fonctions superadmin et migrer `publicRepository`, `restaurantRepository`, `operationsRepository`, `superadminRepository` et `BaseRepository` vers un accès Knex asynchrone.
 2. Convertir leurs services, controllers et middleware consommateurs, y compris transactions et rollback.
 3. Éliminer tous les accès métier directs à `getDb()` dans les chemins de production.
 4. Tester l'ensemble des parcours métier sur PostgreSQL réel, pas seulement les migrations.
