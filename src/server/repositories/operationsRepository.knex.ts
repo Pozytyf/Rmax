@@ -3,7 +3,7 @@ import type { Knex } from 'knex';
 import { AppError } from '../services/errors.ts';
 import { getKnex } from '../knex.ts';
 import { mapPromotionRow } from '../services/pricingEngine.ts';
-import type { B2bInvoice, CustomerReview, InventoryCount, MenuCombo, Promotion, StaffShift, StaffTimeClock, TableCall } from '../../types/index.ts';
+import type { B2bInvoice, CashRegisterSession, CustomerReview, InventoryCount, MenuCombo, Promotion, StaffShift, StaffTimeClock, TableCall } from '../../types/index.ts';
 
 export class KnexOperationsReadRepository {
   constructor(private readonly db: Knex = getKnex()) {}
@@ -122,6 +122,88 @@ export class KnexOperationsReadRepository {
 
   async deletePromotion(id: string, rid: string): Promise<number> {
     return this.db('promotions').where({ id, restaurant_id: rid }).del();
+  }
+
+  private mapRegisterRow(r: Record<string, unknown>): CashRegisterSession {
+    return {
+      id: String(r.id), restaurantId: String(r.restaurant_id),
+      zNumber: String(r.z_number || ''),
+      openedByUserId: r.opened_by_user_id ? String(r.opened_by_user_id) : null,
+      openedByName: String(r.opened_by_name || ''),
+      openingFloatXof: Number(r.opening_float_xof || 0),
+      openedAt: String(r.opened_at),
+      closedByUserId: r.closed_by_user_id ? String(r.closed_by_user_id) : null,
+      closedByName: r.closed_by_name ? String(r.closed_by_name) : null,
+      closedAt: r.closed_at ? String(r.closed_at) : null,
+      status: r.status === 'CLOSED' ? 'CLOSED' : 'OPEN',
+      expectedCashXof: Number(r.expected_cash_xof || 0),
+      expectedMobileXof: Number(r.expected_mobile_xof || 0),
+      expectedCardXof: Number(r.expected_card_xof || 0),
+      countedCashXof: Number(r.counted_cash_xof || 0),
+      countedMobileXof: Number(r.counted_mobile_xof || 0),
+      countedCardXof: Number(r.counted_card_xof || 0),
+      varianceXof: Number(r.variance_xof || 0),
+      totalSalesXof: Number(r.total_sales_xof || 0),
+      refundsXof: Number(r.refunds_xof || 0),
+      ordersCount: Number(r.orders_count || 0),
+      notes: String(r.notes || ''),
+    };
+  }
+
+  async findOpenRegister(rid: string): Promise<CashRegisterSession | null> {
+    const row = await this.db('cash_register_sessions')
+      .where({ restaurant_id: rid, status: 'OPEN' })
+      .orderBy('opened_at', 'desc')
+      .first();
+    return row ? this.mapRegisterRow(row) : null;
+  }
+
+  async findClosedRegisters(rid: string, limit = 30): Promise<CashRegisterSession[]> {
+    const rows = await this.db('cash_register_sessions')
+      .where({ restaurant_id: rid, status: 'CLOSED' })
+      .orderBy('closed_at', 'desc')
+      .limit(Math.max(1, Math.min(100, Math.floor(limit))));
+    return rows.map((row) => this.mapRegisterRow(row));
+  }
+
+  async computeRegisterLiveTotals(rid: string, sinceIso: string, openingFloatXof: number) {
+    const payRows = await this.db('payments')
+      .where({ restaurant_id: rid })
+      .where('created_at', '>=', sinceIso)
+      .select('method', 'status')
+      .sum({ total: 'amount_xof' })
+      .groupBy('method', 'status');
+    let cashSales = 0;
+    let mobileSales = 0;
+    let cardSales = 0;
+    let cashRefunds = 0;
+    let totalRefunds = 0;
+    for (const row of payRows) {
+      const amount = Number(row.total || 0);
+      if (row.status === 'REFUNDED') {
+        totalRefunds += amount;
+        if (row.method === 'CASH') cashRefunds += amount;
+        continue;
+      }
+      if (row.status !== 'PAID') continue;
+      if (row.method === 'CASH') cashSales += amount;
+      else if (row.method === 'CARD') cardSales += amount;
+      else mobileSales += amount;
+    }
+    const ordersRow = await this.db('orders')
+      .where({ restaurant_id: rid })
+      .where('created_at', '>=', sinceIso)
+      .whereNot('status', 'CANCELLED')
+      .count({ c: '*' })
+      .first();
+    return {
+      expectedCashXof: openingFloatXof + cashSales - cashRefunds,
+      expectedMobileXof: mobileSales,
+      expectedCardXof: cardSales,
+      totalSalesXof: cashSales + mobileSales + cardSales,
+      refundsXof: totalRefunds,
+      ordersCount: Number(ordersRow?.c || 0),
+    };
   }
 
   async findTableCalls(rid: string): Promise<TableCall[]> {
