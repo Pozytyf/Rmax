@@ -83,9 +83,9 @@ export const operationsController = {
   },
 
   // Cash Register & Z-Reports
-  getRegisterState(req: Request, res: Response) {
+  async getRegisterState(req: Request, res: Response) {
     try {
-      res.json(operationsService.getRegisterState(req.auth!.restaurantId!));
+      res.json(await operationsService.getRegisterState(req.auth!.restaurantId!));
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement caisse.');
     }

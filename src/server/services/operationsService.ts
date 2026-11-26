@@ -292,17 +292,27 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 3. Cash Register & Z-Reports ─────────────────────────────────────────
-  getRegisterState(rid: string) {
+  async getRegisterState(rid: string) {
     this.ensureTenantId(rid);
-    const open = operationsRepository.findOpenRegister(rid);
+    const usePostgres = usesPostgresRepositories();
+    const [open, history] = usePostgres
+      ? await Promise.all([
+          knexOperationsReadRepository.findOpenRegister(rid),
+          knexOperationsReadRepository.findClosedRegisters(rid),
+        ])
+      : [
+          operationsRepository.findOpenRegister(rid),
+          operationsRepository.findClosedRegisters(rid),
+        ];
     const liveTotals = open
-      ? operationsRepository.computeRegisterLiveTotals(
-          rid,
-          open.openedAt,
-          open.openingFloatXof,
-        )
+      ? usePostgres
+        ? await knexOperationsReadRepository.computeRegisterLiveTotals(
+            rid, open.openedAt, open.openingFloatXof,
+          )
+        : operationsRepository.computeRegisterLiveTotals(
+            rid, open.openedAt, open.openingFloatXof,
+          )
       : null;
-    const history = operationsRepository.findClosedRegisters(rid);
     return {
       activeSession: open,
       liveTotals,
