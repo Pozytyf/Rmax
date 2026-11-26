@@ -1,11 +1,8 @@
 import crypto from 'node:crypto';
 import type { Knex } from 'knex';
 import { AppError } from '../services/errors.ts';
-import { getKnex } from '../knex.ts';
 
 export class KnexRestaurantStockRepository {
-  constructor(private readonly db: Knex = getKnex()) {}
-
   async deductStocksForOrderItems(
     trx: Knex.Transaction,
     params: {
@@ -52,7 +49,9 @@ export class KnexRestaurantStockRepository {
         .where({ id: stockId, restaurant_id: params.rid })
         .forUpdate()
         .first();
-      if (!stock) continue;
+      if (!stock) {
+        throw new AppError(409, 'Un ingrédient de la recette référence un stock introuvable. La commande a été annulée.');
+      }
 
       const deduct = Math.round(rawDeduct * 1000) / 1000;
       const currentQty = Number(stock.quantity);
