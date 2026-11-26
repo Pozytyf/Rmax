@@ -15,8 +15,8 @@ Fondations de configuration, migrations, intégrité de schéma et CI validées.
 - L'API exécutait des migrations Knex puis initialisait SQLite ; les erreurs de migration étaient auparavant ignorées.
 - La configuration PostgreSQL désactivait initialement la validation TLS.
 - Comparaison du schéma SQLite historique et du schéma Knex : 11 tables opérationnelles manquaient dans PostgreSQL.
-- Inspection Supabase du projet nommé `RestoMax V1` : 35 tables présentes à l'inspection, RLS activé, aucune politique trouvée dans `pg_policies`, et une seule clé étrangère métier existante (`users.tenant_id → tenants.id`). Le projet contient six migrations Knex enregistrées et aucune ligne métier lors de l'inspection. L'event trigger `ensure_rls` était actif.
-- Le JWT applicatif Resto’MAX est signé avec `JWT_SECRET`, alors que le navigateur utilise Supabase Realtime avec la seule clé anon et n'appelle pas `realtime.setAuth()`. Les policies basées sur `auth.jwt()->>'restaurant_id'` ne peuvent donc pas être activées sans mettre en place une identité Supabase signée de confiance.
+- Inspection initiale Supabase du projet `RestoMax V1` : 35 tables, RLS activé, aucune politique dans `pg_policies`, une seule clé étrangère métier (`users.tenant_id → tenants.id`), six migrations Knex enregistrées et aucune ligne métier. L'event trigger `ensure_rls` était actif.
+- Le JWT applicatif Resto’MAX est signé avec `JWT_SECRET`, alors que le navigateur utilise Supabase Realtime avec la seule clé anon et n'appelle pas `realtime.setAuth()`. Les politiques tenant exigent un JWT Supabase de confiance contenant `restaurant_id` ou `app_metadata.restaurant_id`; le pont d'authentification Realtime reste à construire.
 
 ### Corrections réalisées
 - Refus du fallback SQLite lorsque PostgreSQL est explicitement demandé sans URL.
@@ -27,11 +27,12 @@ Fondations de configuration, migrations, intégrité de schéma et CI validées.
 - Les migrations sont sorties du démarrage de chaque instance production/serverless ; le runtime vérifie leur état. Les migrations locales restent automatiques en développement.
 - Le health check réutilise le pool Knex de l'application.
 - Ajout des 11 tables opérationnelles manquantes.
-- RLS activé explicitement sur les nouvelles tables métier, sans politique permissive non authentifiée.
+- RLS activé explicitement sur les nouvelles tables métier, avec politiques tenant basées sur des claims vérifiés et sans accès métier anonyme.
+- Application sur Supabase `RestoMax V1` des migrations SQL 010 à 014 : le schéma compte maintenant 46 tables et 46 politiques RLS. Les tables sensibles (`users`, `sessions`, `auth_tokens`, `knex_migrations`, `knex_migrations_lock`) ont des politiques deny-all et aucun privilège Data API.
 - Ajout de clés étrangères manquantes entre restaurants, membres, utilisateurs, commandes, lignes, paiements, stocks, recettes, achats, fidélité, inventaires et personnel. Les contraintes sont ajoutées `NOT VALID` puis validées, et les doublons équivalents déjà déclarés sont ignorés.
 - Ajout d'un index unique sur `(restaurant_id, order_number)` après contrôle préalable des doublons.
 - Ajout d'une CI avec typecheck, tests unitaires/routes, migrations PostgreSQL, smoke test PostgreSQL, build.
-- Durcissement appliqué directement sur le projet Supabase `RestoMax V1` : retrait des privilèges d'exécution de `public.rls_auto_enable()` pour `PUBLIC`, `anon` et `authenticated`. Vérification après changement : `anon_can_execute=false`, `authenticated_can_execute=false`, event trigger `ensure_rls` toujours activé. L'advisor Supabase ne signale plus l'exposition de cette fonction.
+- Durcissement appliqué directement sur Supabase `RestoMax V1` : retrait des privilèges d'exécution de `public.rls_auto_enable()` pour `PUBLIC`, `anon` et `authenticated`; `search_path=pg_catalog` fixé sur les fonctions RLS; création des 11 tables métier manquantes; ajout des politiques tenant et politiques enfants; accès Data API révoqué pour les tables sensibles internes. L'event trigger `ensure_rls` reste actif.
 - Ajout de tests pour les règles de configuration, le verrou de migrations, la présence des tables, RLS, clés étrangères et unicité des numéros de commande.
 
 ### Validation réelle GitLab
@@ -55,9 +56,14 @@ Le build signale encore un bundle frontend principal supérieur à 700 kB ; c'es
 7. Mettre en place une authentification Realtime Supabase fiable avant d'ajouter des policies RLS permettant l'accès du navigateur.
 
 ### Sécurité Supabase — état après correction
-Le problème d'exécution RPC de `public.rls_auto_enable()` a été corrigé sur le projet `RestoMax V1` via une migration Supabase : les rôles `PUBLIC`, `anon` et `authenticated` n'ont plus le droit d'exécuter la fonction. Contrôle post-migration : les deux rôles applicatifs sont refusés et l'event trigger `ensure_rls` reste activé. L'advisor de sécurité ne remonte plus ce finding.
+- 46 politiques RLS sur 46 tables publiques.
+- Advisor Supabase sécurité : aucun finding.
+- `anon` ne peut pas lire les commandes ; `authenticated` a le privilège SQL mais reste limité par les politiques tenant.
+- `users`, `sessions`, `auth_tokens` et les tables de migration sont explicitement refusées aux rôles Data API.
+- `public.rls_auto_enable()` n'est plus exécutable par `PUBLIC`, `anon` ou `authenticated`; l'event trigger `ensure_rls` reste actif.
+- Les fonctions tenant ont `search_path=pg_catalog`.
 
-Il reste 35 tables avec RLS activé mais sans politiques. L'accès navigateur doit rester refusé tant qu'une identité Supabase signée et liée au restaurant n'est pas mise en place ; le backend doit utiliser un rôle serveur protégé. Les policies Realtime ne sont pas encore activées.
+Le JWT du navigateur n'est pas encore transmis à Supabase Realtime. Les policies sont en place, mais les abonnements tenant ne sont pas certifiés fonctionnels tant que le pont d'authentification Supabase n'est pas réalisé. Le backend SQL utilise une connexion privilégiée et doit continuer à appliquer explicitement le tenant dans chaque repository.
 
 ### Déploiement
 Ne pas fusionner ni déployer cette branche en l'état. Les garde-fous SQLite rendent volontairement les opérations métier encore non migrées indisponibles quand PostgreSQL est sélectionné. Aucune migration de données métier de production n'a été réalisée.
