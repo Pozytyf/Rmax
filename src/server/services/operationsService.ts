@@ -606,9 +606,11 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 7. Inventory Counts & Typed Waste ────────────────────────────────────
-  listInventoryCounts(rid: string) {
+  async listInventoryCounts(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findInventoryCounts(rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findInventoryCounts(rid)
+      : operationsRepository.findInventoryCounts(rid);
   }
 
   createInventoryCount(auth: AuthContext, body: Record<string, unknown>) {

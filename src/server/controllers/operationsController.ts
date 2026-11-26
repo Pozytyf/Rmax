@@ -173,10 +173,10 @@ export const operationsController = {
   },
 
   // Inventory Counts & Typed Waste
-  listInventoryCounts(req: Request, res: Response) {
+  async listInventoryCounts(req: Request, res: Response) {
     try {
       res.json({
-        counts: operationsService.listInventoryCounts(req.auth!.restaurantId!),
+        counts: await operationsService.listInventoryCounts(req.auth!.restaurantId!),
       });
     } catch (err) {
       handleControllerError(res, err, 'Erreur chargement inventaires.');
