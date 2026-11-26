@@ -117,7 +117,7 @@ export async function up(knex: Knex): Promise<void> {
       t.string('restaurant_id').notNullable();
       t.string('subscription_id');
       t.integer('amount_xof').notNullable();
-      t.string('status').notNullable().defaultTo('PAID');
+      t.string('status').notNullable().defaultTo('PENDING');
       t.string('payment_method').notNullable();
       t.string('mode').notNullable().defaultTo('TEST');
       t.string('paid_at');

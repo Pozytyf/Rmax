@@ -220,7 +220,7 @@ function runMigrations(db: SqliteDatabase): void {
       restaurant_id TEXT NOT NULL REFERENCES restaurants(id),
       subscription_id TEXT REFERENCES subscriptions(id),
       amount_xof INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'PAID',
+      status TEXT NOT NULL DEFAULT 'PENDING',
       payment_method TEXT NOT NULL,
       mode TEXT NOT NULL DEFAULT 'TEST',
       paid_at TEXT,
