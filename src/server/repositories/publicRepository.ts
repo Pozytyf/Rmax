@@ -274,7 +274,7 @@ export class PublicRepository extends BaseRepository {
     const db = getDb();
     const order = db
       .prepare(
-        `SELECT o.id, o.order_number, o.order_type, o.status, o.discount_xof,
+        `SELECT o.id, o.restaurant_id, o.order_number, o.order_type, o.status, o.discount_xof,
                 o.total_xof, o.paid_xof, o.notes, o.customer_name, o.customer_phone,
                 o.promo_code, o.loyalty_points_used, o.loyalty_points_earned,
                 o.created_at, o.updated_at, t.label as table_label,

@@ -1657,7 +1657,7 @@ export class PublicService extends BaseService<PublicRepository> {
       comment: parsed.comment,
     });
 
-    broadcastRestaurantEvent(ordRow.restaurant_id, 'review:created', {
+    broadcastRestaurantEvent(restaurantId, 'review:created', {
       review: created,
     });
     return { review: created };

@@ -129,9 +129,9 @@ export const publicController = {
     }
   },
 
-  callWaiterOrBill(req: Request, res: Response) {
+  async callWaiterOrBill(req: Request, res: Response) {
     try {
-      const result = publicService.callWaiterOrBill(
+      const result = await publicService.callWaiterOrBill(
         String(req.params.token),
         req.body || {},
       );
@@ -141,9 +141,9 @@ export const publicController = {
     }
   },
 
-  submitQrReview(req: Request, res: Response) {
+  async submitQrReview(req: Request, res: Response) {
     try {
-      const result = publicService.submitQrReview(
+      const result = await publicService.submitQrReview(
         String(req.params.token),
         String(req.params.orderId),
         req.body || {},
@@ -154,9 +154,9 @@ export const publicController = {
     }
   },
 
-  submitQrServiceRating(req: Request, res: Response) {
+  async submitQrServiceRating(req: Request, res: Response) {
     try {
-      const result = publicService.submitQrServiceRating(
+      const result = await publicService.submitQrServiceRating(
         String(req.params.token),
         req.body || {},
       );
@@ -233,9 +233,9 @@ export const publicController = {
     }
   },
 
-  submitStorefrontReview(req: Request, res: Response) {
+  async submitStorefrontReview(req: Request, res: Response) {
     try {
-      const result = publicService.submitStorefrontReview(
+      const result = await publicService.submitStorefrontReview(
         String(req.params.slug),
         String(req.params.orderId),
         req.body || {},
@@ -246,9 +246,9 @@ export const publicController = {
     }
   },
 
-  submitStorefrontServiceRating(req: Request, res: Response) {
+  async submitStorefrontServiceRating(req: Request, res: Response) {
     try {
-      const result = publicService.submitStorefrontServiceRating(
+      const result = await publicService.submitStorefrontServiceRating(
         String(req.params.slug),
         req.body || {},
       );
