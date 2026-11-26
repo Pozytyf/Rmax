@@ -375,8 +375,8 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
 
     const orderId = `it_order_${suffix}`;
     const diningTable = await db('dining_tables').where({ restaurant_id: restaurantId }).first();
-    await db.transaction((trx) =>
-      knexRestaurantStockRepository.insertPosOrder(trx, {
+    const orderDeduction = await db.transaction(async (trx) => {
+      await knexRestaurantStockRepository.insertPosOrder(trx, {
         orderId, rid: restaurantId, orderNumber: `IT-${suffix.slice(0, 6)}`,
         orderType: 'DINE_IN', tableId: String(diningTable.id),
         customerName: 'Client integration', customerPhone: '',
@@ -389,8 +389,14 @@ test('PostgreSQL menu and operations repositories support tenant-scoped combo an
           unitPriceXof: 3200, optionsSummary: '', optionsDeltaXof: 0,
           quantity: 1, lineTotalXof: 3200, notes: '',
         }],
-      }),
-    );
+      });
+      return knexRestaurantStockRepository.deductStocksForOrderItems(trx, {
+        rid: restaurantId, orderNumber: `IT-${suffix.slice(0, 6)}`,
+        items: [{ menuItemId, quantity: 1 }], userId, now,
+      });
+    });
+    assert.equal(orderDeduction.deductedCount, 1);
+    assert.equal(Number((await db('stocks').select('quantity').where({ id: stockId, restaurant_id: restaurantId }).first())?.quantity), 9.5);
     assert.equal((await knexRestaurantStockRepository.findOrderByIdempotencyKey(
       restaurantId, `it-idem-${suffix}`,
     ))?.id, orderId);
