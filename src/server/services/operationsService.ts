@@ -432,18 +432,18 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 4. Table Calls ───────────────────────────────────────────────────────
-  listTableCalls(rid: string) {
+  async listTableCalls(rid: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findTableCalls(rid);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findTableCalls(rid)
+      : operationsRepository.findTableCalls(rid);
   }
 
-  acknowledgeTableCall(auth: AuthContext, callId: string) {
+  async acknowledgeTableCall(auth: AuthContext, callId: string) {
     const rid = auth.restaurantId!;
-    const changes = operationsRepository.acknowledgeTableCall(
-      callId,
-      rid,
-      auth.fullName,
-    );
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.acknowledgeTableCall(callId, rid, auth.fullName)
+      : operationsRepository.acknowledgeTableCall(callId, rid, auth.fullName);
     if (!changes) throw new AppError(404, 'Appel de table introuvable.');
     broadcastRestaurantEvent(rid, 'table:call_ack', {
       id: callId,
@@ -452,9 +452,11 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 5. Loyalty History & Manual Adjustments ──────────────────────────────
-  getCustomerLoyaltyHistory(rid: string, customerId: string) {
+  async getCustomerLoyaltyHistory(rid: string, customerId: string) {
     this.ensureTenantId(rid);
-    return operationsRepository.findLoyaltyTransactions(rid, customerId);
+    return usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findLoyaltyTransactions(rid, customerId)
+      : operationsRepository.findLoyaltyTransactions(rid, customerId);
   }
 
   adjustCustomerLoyalty(
@@ -511,9 +513,11 @@ export class OperationsService extends BaseService<OperationsRepository> {
   }
 
   // ── 6. Customer Reviews ──────────────────────────────────────────────────
-  listReviews(rid: string) {
+  async listReviews(rid: string) {
     this.ensureTenantId(rid);
-    const reviews = operationsRepository.findCustomerReviews(rid);
+    const reviews = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.findCustomerReviews(rid)
+      : operationsRepository.findCustomerReviews(rid);
     const total = reviews.length;
     const round1 = (val: number) => Math.round(val * 10) / 10;
     const avgRating =
@@ -578,15 +582,17 @@ export class OperationsService extends BaseService<OperationsRepository> {
     };
   }
 
-  replyReview(auth: AuthContext, reviewId: string, body: Record<string, unknown>) {
+  async replyReview(auth: AuthContext, reviewId: string, body: Record<string, unknown>) {
     const rid = auth.restaurantId!;
     const reply = String(body?.reply || '').trim();
     if (reply.length < 2) {
       throw new AppError(400, 'Veuillez saisir une réponse client.');
     }
-    const changes = operationsRepository.replyToReview(reviewId, rid, reply);
+    const changes = usesPostgresRepositories()
+      ? await knexOperationsReadRepository.replyToReview(reviewId, rid, reply)
+      : operationsRepository.replyToReview(reviewId, rid, reply);
     if (!changes) throw new AppError(404, 'Avis client introuvable.');
-    recordAudit(getDb(), {
+    const auditParams = {
       actorUserId: auth.userId,
       actorEmail: auth.email,
       actorRole: auth.role,
@@ -594,7 +600,9 @@ export class OperationsService extends BaseService<OperationsRepository> {
       action: 'CUSTOMER_REVIEW_REPLIED',
       targetType: 'REVIEW',
       targetId: reviewId,
-    });
+    };
+    if (usesPostgresRepositories()) await recordAuditWithKnex(getKnex(), auditParams);
+    else recordAudit(getDb(), auditParams);
   }
 
   // ── 7. Inventory Counts & Typed Waste ────────────────────────────────────
