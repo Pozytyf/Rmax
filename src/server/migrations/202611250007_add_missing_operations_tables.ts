@@ -69,6 +69,8 @@ export async function up(knex: Knex): Promise<void> {
       t.integer('orders_count').notNullable().defaultTo(0);
       t.text('notes').notNullable().defaultTo('');
       t.index(['restaurant_id', 'status', 'opened_at'], 'idx_cash_register_restaurant_status');
+      t.index(['opened_by_user_id'], 'idx_cash_register_opened_by');
+      t.index(['closed_by_user_id'], 'idx_cash_register_closed_by');
     });
   }
 
@@ -85,6 +87,7 @@ export async function up(knex: Knex): Promise<void> {
       t.string('acknowledged_at');
       t.string('created_at').notNullable();
       t.index(['restaurant_id', 'status', 'created_at'], 'idx_table_calls_restaurant_status');
+      t.index(['table_id'], 'idx_table_calls_table_fk');
     });
   }
 
@@ -98,6 +101,8 @@ export async function up(knex: Knex): Promise<void> {
       t.text('reason').notNullable().defaultTo('');
       t.string('created_at').notNullable();
       t.index(['restaurant_id', 'customer_id', 'created_at'], 'idx_loyalty_transactions_customer');
+      t.index(['customer_id'], 'idx_loyalty_transactions_customer_fk');
+      t.index(['order_id'], 'idx_loyalty_transactions_order_fk');
     });
   }
 

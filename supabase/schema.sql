@@ -615,6 +615,11 @@ CREATE INDEX IF NOT EXISTS idx_stocks_restaurant ON public.stocks(restaurant_id)
 CREATE INDEX IF NOT EXISTS idx_recipes_restaurant ON public.menu_item_recipes(restaurant_id, menu_item_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_restaurant ON public.notifications(restaurant_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_restaurant ON public.audit_logs(restaurant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cash_register_opened_by ON public.cash_register_sessions(opened_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_cash_register_closed_by ON public.cash_register_sessions(closed_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_customer_fk ON public.loyalty_transactions(customer_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_order_fk ON public.loyalty_transactions(order_id);
+CREATE INDEX IF NOT EXISTS idx_table_calls_table_fk ON public.table_calls(table_id);
 CREATE INDEX IF NOT EXISTS idx_menu_combos_restaurant_active ON public.menu_combos(restaurant_id, active);
 CREATE INDEX IF NOT EXISTS idx_promotions_restaurant_active ON public.promotions(restaurant_id, active);
 CREATE INDEX IF NOT EXISTS idx_cash_register_restaurant_status ON public.cash_register_sessions(restaurant_id, status, opened_at);

@@ -172,6 +172,11 @@ CREATE TABLE IF NOT EXISTS public.b2b_invoices (
 
 -- ============================================================================
 
+CREATE INDEX IF NOT EXISTS idx_cash_register_opened_by ON public.cash_register_sessions(opened_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_cash_register_closed_by ON public.cash_register_sessions(closed_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_customer_fk ON public.loyalty_transactions(customer_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_order_fk ON public.loyalty_transactions(order_id);
+CREATE INDEX IF NOT EXISTS idx_table_calls_table_fk ON public.table_calls(table_id);
 CREATE INDEX IF NOT EXISTS idx_menu_combos_restaurant_active ON public.menu_combos(restaurant_id, active);
 CREATE INDEX IF NOT EXISTS idx_promotions_restaurant_active ON public.promotions(restaurant_id, active);
 CREATE INDEX IF NOT EXISTS idx_cash_register_restaurant_status ON public.cash_register_sessions(restaurant_id, status, opened_at);
