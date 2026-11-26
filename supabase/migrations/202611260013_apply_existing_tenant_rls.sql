@@ -137,12 +137,6 @@ CREATE POLICY plans_public_read ON public.plans FOR SELECT USING (active = 1);
 GRANT SELECT ON TABLE public.plans TO anon, authenticated, service_role;
 GRANT INSERT, UPDATE, DELETE ON TABLE public.plans TO authenticated, service_role;
 
-ALTER TABLE public.roles ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS roles_read_authenticated ON public.roles;
-CREATE POLICY roles_read_authenticated ON public.roles FOR SELECT TO authenticated USING (TRUE);
-GRANT SELECT ON TABLE public.roles TO authenticated, service_role;
-REVOKE ALL ON TABLE public.roles FROM anon;
-
 ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_subscriptions ON public.subscriptions;
 CREATE POLICY tenant_isolation_subscriptions ON public.subscriptions
