@@ -2,7 +2,7 @@
 
 Branche de travail : `fix/chore-1-postgresql-persistence`
 Merge request : !1 (Draft)
-Dernier pipeline complet validé : [3117648302](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117648302)
+Dernier pipeline complet validé : [3117652418](https://gitlab.com/multitachesci/Kokolia/-/pipelines/3117648302)
 
 ## Chantier 1 — PostgreSQL et persistance
 
@@ -35,11 +35,11 @@ Fondations de configuration, migrations, intégrité de schéma, CI et parcours 
 - Le health check réutilise le pool Knex de l'application.
 - Ajout des 11 tables opérationnelles manquantes.
 - RLS activé explicitement sur les nouvelles tables métier, avec politiques tenant basées sur des claims vérifiés et sans accès métier anonyme.
-- Application sur Supabase `RestoMax V1` des migrations SQL 010 à 014 : le schéma compte maintenant 46 tables et 46 politiques RLS. Les tables sensibles (`users`, `sessions`, `auth_tokens`, `knex_migrations`, `knex_migrations_lock`) ont des politiques deny-all et aucun privilège Data API.
+- Application sur Supabase `RestoMax V1` des migrations SQL 010 à 015 : le schéma compte maintenant 46 tables et 46 politiques RLS. Les tables sensibles (`users`, `sessions`, `auth_tokens`, `knex_migrations`, `knex_migrations_lock`) ont des politiques deny-all et aucun privilège Data API.
 - Ajout de clés étrangères manquantes entre restaurants, membres, utilisateurs, commandes, lignes, paiements, stocks, recettes, achats, fidélité, inventaires et personnel. Les contraintes sont ajoutées `NOT VALID` puis validées, et les doublons équivalents déjà déclarés sont ignorés.
 - Ajout d'un index unique sur `(restaurant_id, order_number)` après contrôle préalable des doublons.
 - Ajout d'index sur les colonnes FK de caisse, fidélité et appels de table. L'advisor Supabase performance ne signale plus de clés étrangères non indexées ; les index inutilisés sont attendus sur une base sans charge métier.
-- Ajout d'une CI avec typecheck, tests unitaires/routes, migrations PostgreSQL, smoke test PostgreSQL, build.
+- Ajout d'une CI avec typecheck, tests unitaires/routes, migrations PostgreSQL, tests SQL Supabase et bootstrap frais, smoke test PostgreSQL, build.
 - Durcissement appliqué directement sur Supabase `RestoMax V1` : retrait des privilèges d'exécution de `public.rls_auto_enable()` pour `PUBLIC`, `anon` et `authenticated`; `search_path=pg_catalog` fixé sur les fonctions RLS; création des 11 tables métier manquantes; ajout des politiques tenant et politiques enfants; accès Data API révoqué pour les tables sensibles internes. L'event trigger `ensure_rls` reste actif.
 - Ajout de tests pour les règles de configuration, le verrou de migrations, la présence des tables, RLS, clés étrangères et unicité des numéros de commande.
 
@@ -52,13 +52,13 @@ Pipeline [3117648302](https://gitlab.com/multitachesci/Kokolia/-/pipelines/31176
 - Smoke test PostgreSQL : connexion, schéma, RLS sur les 11 nouvelles tables, clés étrangères et index unique vérifiés.
 - Test d'intégration PostgreSQL du repository d'authentification : création tenant/restaurant/utilisateur/membership/session, lecture utilisateur/venues, token à usage unique, résolution JWT, révocation de session et audit vérifiés.
 - Test SQL Supabase : 46 politiques, privilèges, search_path et lecture/écriture inter-tenant refusées vérifiés sur PostgreSQL 16.
-- Test de bootstrap Supabase : schéma initial + migrations SQL 011 à 014, 46 politiques et grants vérifiés.
+- Test de bootstrap Supabase : schéma initial frais, tables métier, 46 politiques et grants vérifiés.
 - Build Vite/PWA : succès.
 
 Le build signale encore un bundle frontend principal supérieur à 700 kB ; c'est une optimisation de performance à traiter dans le chantier UX/performance.
 
 ### Inventaire des accès SQLite
-Le relevé statique initial comptait 281 appels `getDb()`, 435 appels `.prepare()` et 81 appels `.exec()` dans les repositories, le middleware et les services. L'authentification a été partiellement sortie de ces chemins, mais le reste des repositories métier n'est pas encore migré. Le détail par fichier et l'ordre de conversion sont consignés dans `DB_MIGRATION_INVENTORY.md`.
+Le relevé statique initial comptait 281 appels `getDb()`, 435 appels `.prepare()` et 81 appels `.exec()` dans les repositories, le middleware et les services. Le parcours d'authentification est désormais migré sur le chemin PostgreSQL de production, mais les repositories public, restaurant, opérations et superadmin ne sont pas encore migrés. Le détail par fichier et l'ordre de conversion sont consignés dans `DB_MIGRATION_INVENTORY.md`.
 
 ### Travaux bloquants avant clôture
 1. Terminer le retrait du repository SQLite historique `authRepository` pour les fonctions superadmin et migrer `publicRepository`, `restaurantRepository`, `operationsRepository`, `superadminRepository` et `BaseRepository` vers un accès Knex asynchrone.
